@@ -40,7 +40,11 @@ logger = logging.getLogger("secagent")
 # ====================================================================
 
 def _build_banner():
-    from secagent import __version__
+    try:
+        from secagent import __version__
+        ver = __version__
+    except (ImportError, AttributeError):
+        ver = "dev"
     return rf"""
   _____           ____                  _
  / ___/___  _____/ / /____  ____  ____ (_)__
@@ -48,7 +52,7 @@ def _build_banner():
 ___/ /  __/ / /_/ / / /_/ / / / / /_/ / /
 \____/\___/_/  \__,_/  \____/_/ /_/__,_/_/
 
-  Security Analysis Agent v{__version__}
+  Security Analysis Agent v{ver}
   Type /help for commands, or enter a domain/IP/hash/CVE to analyze.
 """
 
