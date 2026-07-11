@@ -96,14 +96,14 @@ class TestComputeRiskScore:
 
     def test_phishing_cloudflare(self):
         score, level = compute_risk_score(["phishing"], "cloudflare", [])
-        # 0.7 * 0.3 = 0.21 -> "中"
-        assert level == "中"
-        assert score < 0.5
+        # 0.75 * 0.20 = 0.15 -> "低"
+        assert level == "低", f"level={level} for phishing+cloudflare"
+        assert score < 0.3, f"score={score} should be < 0.3"
 
     def test_no_threat(self):
-        score, level = compute_risk_score([], "")
+        score, level = compute_risk_score([], "", [])
         assert level == "低"
-        assert score == 0.1
+        assert score == 0.05
 
     def test_malware_aws(self):
         score, level = compute_risk_score(["malware"], "aws", [])
