@@ -1074,11 +1074,14 @@ def main():
     level = logging.DEBUG if args.verbose else logging.WARNING
     logging.basicConfig(level=level, format="%(name)s: %(message)s")
     # 抑制 MCP/httpx 的 INFO 日志噪音（HTTP请求、session协商等）
-    # 设置父 logger 的 WARNING 级别会自动覆盖所有子 logger
+    # 用 filter 而非 setLevel，因为库可能自己加 handler 绕过 setLevel
+    class _SuppressInfoFilter(logging.Filter):
+        def filter(self, record):
+            return record.levelno >= logging.WARNING
     for noisy in ("mcp", "httpx", "httpcore", "anyio", "urllib3"):
-        logging.getLogger(noisy).setLevel(
-            logging.DEBUG if args.verbose else logging.WARNING
-        )
+        lg = logging.getLogger(noisy)
+        lg.setLevel(logging.WARNING)
+        lg.addFilter(_SuppressInfoFilter())
 
     # 加载配置
     config = load_config()
