@@ -628,6 +628,78 @@ def cmd_batch(agent, filepath: str):
 # Monitor command
 # ====================================================================
 
+def cmd_update():
+    """升级 secagent：自动检测安装方式并执行升级。"""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    console.print("[bold cyan]secagent 升级[/bold cyan]\n")
+
+    # 检测当前版本
+    from secagent import __version__
+    console.print(f"当前版本: {__version__}")
+
+    # 检测安装方式
+    pkg_dir = Path(__file__).parent.parent
+    is_dev = (pkg_dir / ".git").exists()
+
+    if is_dev:
+        # 开发模式：git pull + pip install -e .
+        console.print("[dim]检测到开发模式（git 仓库）[/dim]")
+        console.print("正在拉取最新代码...")
+        r = subprocess.run(["git", "pull"], capture_output=True, text=True, cwd=str(pkg_dir))
+        if r.returncode == 0:
+            console.print(f"[green]{r.stdout.strip()}[/green]")
+        else:
+            console.print(f"[red]git pull 失败: {r.stderr.strip()}[/red]")
+            return
+        console.print("正在重新安装...")
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", str(pkg_dir)],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            console.print("[green]升级完成[/green]")
+        else:
+            console.print(f"[red]pip install 失败: {r.stderr[-200:]}[/red]")
+    else:
+        # pipx / pip 安装
+        pipx_home = Path.home() / ".local" / "pipx"
+        if pipx_home.exists():
+            console.print("[dim]检测到 pipx 环境[/dim]")
+            console.print("正在升级...")
+            r = subprocess.run(
+                ["pipx", "upgrade", "secagent"],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                console.print(f"[green]{r.stdout.strip()}[/green]")
+            else:
+                console.print("[dim]upgrade 失败，尝试 reinstall...[/dim]")
+                r = subprocess.run(
+                    ["pipx", "reinstall", "secagent"],
+                    capture_output=True, text=True,
+                )
+                if r.returncode == 0:
+                    console.print("[green]reinstall 完成[/green]")
+                else:
+                    console.print(f"[red]升级失败: {r.stderr[-200:]}[/red]")
+        else:
+            console.print("[dim]尝试 pip 升级...[/dim]")
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade",
+                 "git+https://github.com/redbad2/secagent.git"],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                console.print("[green]升级完成[/green]")
+            else:
+                console.print(f"[red]升级失败: {r.stderr[-200:]}[/red]")
+
+    console.print("\n[dim]重启 secagent 以使用新版本[/dim]\n")
+
+
 def cmd_monitor(agent, action: str, target: str = "", depth: str = "quick"):
     """定时监控管理。"""
     from secagent.monitor import MonitorDB
@@ -984,6 +1056,8 @@ def main():
     p_compare.add_argument("--depths", default="quick,standard",
                            help="对比的深度，逗号分隔 (如 quick,standard,deep)")
 
+    p_update = subparsers.add_parser("update", help="升级 secagent")
+
     args = parser.parse_args()
 
     # 日志
@@ -1045,6 +1119,9 @@ def main():
         from secagent.compare import cmd_compare
         cmd_compare(agent, args.target, args.depths)
         agent.close()
+        return
+    elif args.command == "update":
+        cmd_update()
         return
 
     # 交互式模式
