@@ -30,7 +30,7 @@ async def run_comparison(agent, target: str, depths: list[str]) -> dict[str, Ana
         for depth in depths:
             console.print(f"[dim]分析 {target} (depth={depth})...[/dim]")
             try:
-                result = await agent.analyze(target, depth=depth, interactive=False)
+                result = await agent.analyze(target, depth=depth, interactive=False, batch=True)
                 results[depth] = result
                 console.print(f"  [green]完成: risk={result.risk_level}, "
                                f"tools={len(result.tools_used)}, "

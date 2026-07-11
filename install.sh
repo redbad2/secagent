@@ -5,9 +5,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 SECAGENT_HOME="${SECAGENT_HOME:-$HOME/.secagent}"
+VERSION=$(grep '__version__' "$REPO_DIR/secagent/__init__.py" | cut -d'"' -f2)
 
 echo "╔══════════════════════════════════════╗"
-echo "║   secagent 安装程序 v0.1.0          ║"
+echo "║   secagent 安装程序 v${VERSION}          ║"
 echo "╚══════════════════════════════════════╝"
 echo ""
 

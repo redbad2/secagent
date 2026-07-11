@@ -82,6 +82,11 @@ async def web_fetch(url: str, timeout: int = 15, verify_ssl: bool = False) -> st
             resp = await client.get(url)
             content_type = resp.headers.get("content-type", "")
 
+            # 检查响应大小，防止超大响应耗尽内存
+            content_length = resp.headers.get("content-length")
+            if content_length and int(content_length) > 1_000_000:
+                return f"[拒绝] 响应体过大 ({int(content_length)} bytes > 1MB)"
+
             if "text" in content_type or "html" in content_type or "xml" in content_type:
                 text = _html_to_text(resp.text)
             else:

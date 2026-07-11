@@ -203,7 +203,7 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
 # Async runner: single event loop for entire agent lifecycle
 # ====================================================================
 
-async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinking=None, on_learning=None, interactive=True, confirm_fn=None):
+async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinking=None, on_stream=None, on_learning=None, interactive=True, confirm_fn=None):
     """在单个事件循环中完成 connect -> analyze -> disconnect。"""
     try:
         await agent.connect()
@@ -211,6 +211,7 @@ async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinkin
             target, depth=depth,
             on_tool_call=on_tool_call,
             on_thinking=on_thinking,
+            on_stream=on_stream,
             on_learning=on_learning,
             interactive=interactive,
             confirm_fn=confirm_fn,
@@ -230,6 +231,9 @@ def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=No
         display = text[:500] + "..." if len(text) > 500 else text
         console.print(f"  [dim italic]💭 {display}[/dim italic]")
 
+    def on_stream(text):
+        console.print(text, end="", highlight=False)
+
     def on_learning(actions):
         console.print("\n[bold magenta]学习触发:[/bold magenta]")
         for a in actions:
@@ -248,6 +252,7 @@ def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=No
             agent, target, depth, fmt,
             on_tool_call=on_tool_call,
             on_thinking=on_thinking,
+            on_stream=on_stream,
             on_learning=on_learning,
             interactive=True,
             confirm_fn=confirm_fn,
@@ -303,6 +308,9 @@ def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_
         display = text[:500] + "..." if len(text) > 500 else text
         console.print(f"  [dim italic]💭 {display}[/dim italic]")
 
+    def on_stream(text):
+        console.print(text, end="", highlight=False)
+
     def on_learning(actions):
         console.print("\n[bold magenta]学习触发:[/bold magenta]")
         for a in actions:
@@ -322,6 +330,7 @@ def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_
             target, depth=depth,
             on_tool_call=on_tool_call,
             on_thinking=on_thinking,
+            on_stream=on_stream,
             on_learning=on_learning,
             interactive=True,
             confirm_fn=confirm_fn,
@@ -636,7 +645,7 @@ async def _run_batch(agent, targets, concurrency=3):
         async with semaphore:
             console.print(f"[dim]分析 {i}/{len(targets)}: {t}[/dim]")
             try:
-                result = await agent.analyze(t, depth="quick", interactive=False)
+                result = await agent.analyze(t, depth="quick", interactive=False, batch=True)
                 return (t, result.risk_level, (result.summary or "")[:40])
             except Exception as e:
                 return (t, "错误", str(e)[:40])
@@ -1020,9 +1029,12 @@ def _ask_sync(agent, question: str):
         display = text[:500] + "..." if len(text) > 500 else text
         console.print(f"  [dim italic]💭 {display}[/dim italic]")
 
+    def on_stream(text):
+        console.print(text, end="", highlight=False)
+
     async def _run():
         try:
-            response = await agent.ask(question, on_tool_call=on_tool_call, on_thinking=on_thinking)
+            response = await agent.ask(question, on_tool_call=on_tool_call, on_thinking=on_thinking, on_stream=on_stream)
             console.print(f"\n{response}\n")
         except Exception as e:
             console.print(f"\n[red]追问失败: {e}[/red]\n")

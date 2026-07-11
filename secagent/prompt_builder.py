@@ -103,6 +103,30 @@ def build_system_prompt(
             parts.append(f"触发条件: {skill.trigger}")
             parts.append(skill.content)
             parts.append("")
+    else:
+        # 技能加载失败时的基础 fallback
+        parts.append("--- 基础分析流程 ---")
+        if target_type == "domain":
+            parts.append(
+                "1. 查询 CTIA 域名威胁情报\n"
+                "2. 查询 WHOIS 注册信息和 PDNS 解析记录\n"
+                "3. 对解析 IP 查询威胁情报和归属\n"
+                "4. 检查页面内容（web_fetch）\n"
+                "5. 搜索公开情报（Exa）\n"
+                "6. 综合评估风险等级"
+            )
+        elif target_type == "ip":
+            parts.append(
+                "1. 查询 CTIA IP 威胁情报\n"
+                "2. 反向查询关联域名\n"
+                "3. 查询 IP 归属和 ASN\n"
+                "4. 搜索网络空间测绘数据（Hunter）\n"
+                "5. 综合评估风险等级"
+            )
+        elif target_type == "hash":
+            parts.append("1. 查询沙箱分析数据\n2. 分析关联 C2 IP/域名\n3. 综合评估")
+        elif target_type == "cve":
+            parts.append("1. 查询漏洞详情和 CVSS 评分\n2. 查询在野利用情况\n3. 综合评估")
 
     # 当前任务
     parts.append("--- 当前任务 ---")

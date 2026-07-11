@@ -140,9 +140,11 @@ class SecurityAgent:
         depth: str = "standard",
         on_tool_call: Callable[[str, dict], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
+        on_stream: Callable[[str], None] | None = None,
         on_learning: Callable[[list[str]], None] | None = None,
         interactive: bool = True,
         confirm_fn: Callable[[str], bool] | None = None,
+        batch: bool = False,
     ) -> AnalysisResult:
         """分析域名或 IP。
 
@@ -150,9 +152,12 @@ class SecurityAgent:
             target: 域名或 IP 地址
             depth: "quick" | "standard" | "deep"
             on_tool_call: 可选回调 (tool_name, args) -> None，用于 CLI 显示进度
+            on_thinking: 思考过程回调
+            on_stream: 流式输出回调（最终回复时逐块调用）
             on_learning: 可选回调 (actions_list) -> None，用于 CLI 显示学习结果
             interactive: True=交互模式(可提示用户确认), False=批处理模式
             confirm_fn: 确认回调，返回 True 表示用户同意创建技能
+            batch: True=批量模式，跳过 session 状态写入（并发安全）
         """
         if not self._connected:
             # 先判断目标类型，用于过滤连接的 MCP server
@@ -204,6 +209,7 @@ class SecurityAgent:
         final_output, msg = await self._run_loop(
             messages, tool_defs, selected_model, on_tool_call,
             on_thinking=on_thinking,
+            on_stream=on_stream,
             extra_tools_used=tools_used,
         )
 
@@ -215,16 +221,17 @@ class SecurityAgent:
             tools_used=tools_used,
         )
 
-        # 保存会话状态，支持后续追问
-        self._session_active = True
-        self._session_messages = messages
-        self._session_target = target
-        self._session_target_type = target_type
-        self._session_tools_used = tools_used
-        self._session_tool_defs = tool_defs
-        self._session_model = selected_model
+        # 保存会话状态（批量模式跳过，避免并发冲突）
+        if not batch:
+            self._session_active = True
+            self._session_messages = messages
+            self._session_target = target
+            self._session_target_type = target_type
+            self._session_tools_used = tools_used
+            self._session_tool_defs = tool_defs
+            self._session_model = selected_model
 
-        # 存档会话
+        # 存档会话（批量模式仍写入 DB，但不写实例状态）
         try:
             self.sessions.save(
                 target=target,
@@ -237,18 +244,20 @@ class SecurityAgent:
         except Exception as e:
             logger.warning("会话存档失败: %s", e)
 
-        # 事后学习
-        learning_actions = self._post_analyze_learning(
-            target=target,
-            target_type=target_type,
-            result=result,
-            messages=messages,
-            tools_used=tools_used,
-            interactive=interactive,
-            confirm_fn=confirm_fn,
-        )
-        if learning_actions and on_learning:
-            on_learning(learning_actions)
+        # 事后学习（批量模式跳过）
+        learning_actions = []
+        if not batch:
+            learning_actions = self._post_analyze_learning(
+                target=target,
+                target_type=target_type,
+                result=result,
+                messages=messages,
+                tools_used=tools_used,
+                interactive=interactive,
+                confirm_fn=confirm_fn,
+            )
+            if learning_actions and on_learning:
+                on_learning(learning_actions)
 
         return result
 
@@ -257,6 +266,7 @@ class SecurityAgent:
         question: str,
         on_tool_call: Callable[[str, dict], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
+        on_stream: Callable[[str], None] | None = None,
     ) -> str:
         """在当前分析会话基础上追问。
 
@@ -267,6 +277,7 @@ class SecurityAgent:
             question: 用户的追问内容
             on_tool_call: 工具调用回调
             on_thinking: 思考过程回调
+            on_stream: 流式输出回调
 
         Returns:
             LLM 的回复文本
@@ -291,6 +302,7 @@ class SecurityAgent:
             self._session_model,
             on_tool_call,
             on_thinking=on_thinking,
+            on_stream=on_stream,
             extra_tools_used=self._session_tools_used,
         )
 
@@ -397,9 +409,23 @@ class SecurityAgent:
                     stream=True,
                 )
             except Exception as e:
-                logger.error("LLM 调用失败 (迭代 %d): %s", iteration, e)
-                final_output = f"LLM 调用失败: {e}"
-                break
+                # LLM 调用失败：重试一次，然后降级到 fast 模型
+                logger.warning("LLM 调用失败 (迭代 %d): %s，重试中...", iteration, e)
+                try:
+                    fallback_model = self.config.models.fast or model
+                    response = self.llm.chat.completions.create(
+                        model=fallback_model,
+                        messages=messages,
+                        tools=tool_defs if tool_defs else None,
+                        temperature=self.config.llm.temperature,
+                        max_tokens=self.config.llm.max_tokens,
+                        stream=True,
+                    )
+                    logger.info("降级到模型 %s 成功", fallback_model)
+                except Exception as e2:
+                    logger.error("LLM 调用重试失败 (迭代 %d): %s", iteration, e2)
+                    final_output = f"LLM 调用失败: {e2}"
+                    break
 
             # 流式读取完整响应
             content_buf = ""
