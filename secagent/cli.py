@@ -39,16 +39,20 @@ logger = logging.getLogger("secagent")
 # Banner
 # ====================================================================
 
-BANNER = r"""
+def _build_banner():
+    from secagent import __version__
+    return rf"""
   _____           ____                  _
  / ___/___  _____/ / /____  ____  ____ (_)__
- \__ \/ _ \/ / __  / / __ \/ __ \/ __ \/ / /
-___/ /  __/ / /_/ / / /_/ / / / / / /_/ / /
-/____/\___/_/  \__,_/  \____/_/ /_/\__,_/_/
+ \__ \/ _ \/ __  / / __ \/ __ \/ __ \/ / /
+___/ /  __/ / /_/ / / /_/ / / / / /_/ / /
+\____/\___/_/  \__,_/  \____/_/ /_/__,_/_/
 
-  Security Analysis Agent v0.1.0
-  Type /help for commands, or enter a domain/IP to analyze.
+  Security Analysis Agent v{__version__}
+  Type /help for commands, or enter a domain/IP/hash/CVE to analyze.
 """
+
+BANNER = _build_banner()
 
 # ====================================================================
 # Slash command definitions
