@@ -273,9 +273,14 @@ class SecurityAgent:
         if not self._session_active:
             raise RuntimeError("没有活跃的分析会话，请先执行 analyze()")
 
-        # 追加用户追问
+        # 注入上下文：让 LLM 始终知道当前分析目标
+        context_msg = (
+            f"[上下文：当前分析目标为 {self._session_target} "
+            f"(类型: {self._session_target_type})。"
+            f"请围绕该目标的安全分析回答追问。]"
+        )
         self._session_messages.append(
-            {"role": "user", "content": question}
+            {"role": "user", "content": f"{context_msg}\n\n{question}"}
         )
 
         # 运行循环（复用已有 tool_defs 和 model）
