@@ -1,0 +1,97 @@
+# secagent 配置模板
+# 复制到 ~/.secagent/config.yaml 并填入你的 API key
+
+# === LLM 配置 (必填) ===
+llm:
+  base_url: "https://api.deepseek.com/v1"
+  api_key: ""          # 填入 DeepSeek API key
+  model: "deepseek-chat"
+  temperature: 0.1
+
+# === 多模型路由 (可选) ===
+models:
+  fast: "deepseek-chat"
+  standard: "deepseek-chat"
+  reasoning: "deepseek-reasoner"
+
+# === Agent 参数 ===
+agent:
+  max_iterations: 20
+  timeout: 300
+
+# === 内置工具 ===
+web_fetch:
+  enabled: true
+  verify_ssl: false
+
+exa:
+  enabled: true
+
+# === MCP 服务器 ===
+# API key 填入 headers 对应字段，或通过环境变量注入
+mcp_servers:
+  # 奇安信 FDP 基础数据（PDNS/WHOIS/TLS/ICP）
+  qianxin_fdp:
+    url: https://fdp.qianxin.com/mcp/v1/basic/
+    headers:
+      fdp-access: ""      # 填入 FDP access key
+      fdp-secret: ""      # 填入 FDP secret key
+
+  qianxin_fdp_domain:
+    url: https://fdp.qianxin.com/mcp/v1/domain/
+    headers:
+      fdp-access: ""
+      fdp-secret: ""
+
+  qianxin_fdp_ip:
+    url: https://fdp.qianxin.com/mcp/v1/ip/
+    headers:
+      fdp-access: ""
+      fdp-secret: ""
+
+  qianxin_fdp_sample:
+    url: https://fdp.qianxin.com/mcp/v1/sample/
+    headers:
+      fdp-access: ""
+      fdp-secret: ""
+
+  # 奇安信 CTIA 威胁情报
+  ctia_ip:
+    url: https://fdp.qianxin.com/mcp/v1/ctia/ip/
+    headers:
+      X-AuthToken: ""     # 填入 CTIA token
+
+  ctia_domain:
+    url: https://fdp.qianxin.com/mcp/v1/ctia/domain/
+    headers:
+      X-AuthToken: ""
+
+  ctia_exploit:
+    url: https://fdp.qianxin.com/mcp/v1/ctia/exploit/
+    headers:
+      X-AuthToken: ""
+
+  ctia_c2_command:
+    url: https://fdp.qianxin.com/mcp/v1/ctia/c2_command/
+    headers:
+      X-AuthToken: ""
+
+  # Hunter 网络空间测绘
+  hunter_mcp:
+    url: https://hunter.qianxin.com/mcp
+    headers:
+      Authorization: ""   # 填入 "Bearer YOUR_API_KEY"
+
+  # IP 归属查询
+  iporg:
+    url: https://mcp.iporg.dev
+
+  # Exa 搜索（可选）
+  exa:
+    url: https://mcp.exa.ai/mcp
+    headers:
+      x-api-key: ""       # 填入 Exa API key
+
+  # 其他可选工具
+  secagent:
+    url: https://mcp.secagent.dev

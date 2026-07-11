@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# secagent runtime (user-specific, not in repo)
+~/.secagent/
+*.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / temp
+.pytest_cache/
+/tmp/
+*.tmp
+
+# 旧的根目录 skills（已移入 secagent/skills/）
+skills/
