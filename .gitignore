@@ -31,4 +31,4 @@ Thumbs.db
 *.tmp
 
 # 旧的根目录 skills（已移入 secagent/skills/）
-skills/
+/skills/
