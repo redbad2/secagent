@@ -23,6 +23,14 @@ IP_SERVERS = {
     "ctia_ip", "qianxin_fdp_ip", "qianxin_fdp", "iporg",
     "hunter_mcp", "secagent",
 }
+# 样本哈希分析需要的 server
+HASH_SERVERS = {
+    "qianxin_fdp_sample", "ctia_ip", "ctia_domain", "secagent",
+}
+# CVE 漏洞分析需要的 server
+CVE_SERVERS = {
+    "ctia_exploit", "ctia_ip", "secagent",
+}
 # 两种类型都需要的 server
 COMMON_SERVERS = {
     "ctia_domain", "ctia_ip", "qianxin_fdp_domain", "qianxin_fdp_ip",

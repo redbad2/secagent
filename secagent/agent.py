@@ -10,13 +10,13 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from secagent.config import (
-    AgentConfig, DOMAIN_SERVERS, IP_SERVERS, CRITICAL_SERVERS,
-    OPTIONAL_SERVERS, EXA_SERVER,
+    AgentConfig, DOMAIN_SERVERS, IP_SERVERS, HASH_SERVERS, CVE_SERVERS,
+    CRITICAL_SERVERS, OPTIONAL_SERVERS, EXA_SERVER,
 )
 from secagent.learning import MemoryStore, SkillStore, SessionDB, LearningTrigger
 from secagent.mcp_manager import MCPManager
 from secagent.prompt_builder import build_system_prompt
-from secagent.result_parser import AnalysisResult, is_valid_ip, parse_analysis_result
+from secagent.result_parser import AnalysisResult, is_valid_ip, detect_target_type, parse_analysis_result
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +77,16 @@ class SecurityAgent:
         """连接 MCP server。可按目标类型过滤。
 
         Args:
-            target_type: "domain" / "ip" / None(全部)
+            target_type: "domain" / "ip" / "hash" / "cve" / None(全部)
         """
         if target_type == "domain":
             server_names = set(DOMAIN_SERVERS)
         elif target_type == "ip":
             server_names = set(IP_SERVERS)
+        elif target_type == "hash":
+            server_names = set(HASH_SERVERS)
+        elif target_type == "cve":
+            server_names = set(CVE_SERVERS)
         else:
             server_names = None  # 全部
 
@@ -151,10 +155,10 @@ class SecurityAgent:
         """
         if not self._connected:
             # 先判断目标类型，用于过滤连接的 MCP server
-            _target_type = "ip" if is_valid_ip(target) else "domain"
+            _target_type = detect_target_type(target)
             await self.connect(target_type=_target_type)
 
-        target_type = "ip" if is_valid_ip(target) else "domain"
+        target_type = detect_target_type(target)
 
         # 加载相关技能
         relevant_skills = self.skills.find_relevant(target_type, target)

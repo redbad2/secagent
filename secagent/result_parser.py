@@ -91,6 +91,32 @@ def is_valid_ip(target: str) -> bool:
     return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
+def is_hash(target: str) -> bool:
+    """检测是否为文件哈希（MD5/SHA1/SHA256）。"""
+    t = target.strip().lower()
+    if not all(c in "0123456789abcdef" for c in t):
+        return False
+    return len(t) in (32, 40, 64)
+
+
+def is_cve(target: str) -> bool:
+    """检测是否为 CVE ID（如 CVE-2024-1234）。"""
+    import re
+    return bool(re.match(r'^CVE-\d{4}-\d{4,}$', target.strip().upper()))
+
+
+def detect_target_type(target: str) -> str:
+    """自动检测输入类型。返回 'domain' | 'ip' | 'hash' | 'cve'。"""
+    t = target.strip()
+    if is_cve(t):
+        return "cve"
+    if is_hash(t):
+        return "hash"
+    if is_valid_ip(t):
+        return "ip"
+    return "domain"
+
+
 def parse_analysis_result(
     target: str,
     target_type: str,

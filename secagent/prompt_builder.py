@@ -110,4 +110,12 @@ def build_system_prompt(
     }
     parts.append(depth_map.get(depth, depth_map["standard"]))
 
+    # 目标类型特殊提示
+    type_hints = {
+        "hash": "这是文件哈希分析任务。优先使用 qianxin_fdp_sample__sandbox 查询沙箱数据，然后分析关联的 C2 IP/域名。",
+        "cve": "这是 CVE 漏洞分析任务。优先使用 ctia_exploit__v1_exploit 查询漏洞详情，然后查看在野利用情况。",
+    }
+    if target_type in type_hints:
+        parts.append(type_hints[target_type])
+
     return "\n".join(parts)

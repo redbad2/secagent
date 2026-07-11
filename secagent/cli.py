@@ -29,7 +29,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 
 from secagent.config import load_config, SECAGENT_HOME
-from secagent.result_parser import is_valid_ip
+from secagent.result_parser import is_valid_ip, detect_target_type
 
 console = Console()
 
@@ -292,7 +292,7 @@ def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_
             return False
 
     async def _run():
-        await agent.connect(target_type=("ip" if is_valid_ip(target) else "domain"))
+        await agent.connect(target_type=detect_target_type(target))
         result = await agent.analyze(
             target, depth=depth,
             on_tool_call=on_tool_call,
@@ -583,8 +583,9 @@ def cmd_analyze(agent, target: str, fmt: str = "text", depth: str = "standard",
         console.print("用法: /analyze example.com 或 /analyze 1.2.3.4\n")
         return
 
-    target_type = "IP" if is_valid_ip(target) else "域名"
-    console.print(f"\n[bold cyan]分析目标:[/bold cyan] {target} ({target_type})")
+    target_type = detect_target_type(target)
+    type_labels = {"domain": "域名", "ip": "IP", "hash": "样本哈希", "cve": "CVE漏洞"}
+    console.print(f"\n[bold cyan]分析目标:[/bold cyan] {target} ({type_labels.get(target_type, target_type)})")
     console.print(f"[dim]模型: {agent.config.llm.model} | 深度: {depth} | 最大迭代: {agent.config.max_iterations}[/dim]\n")
 
     if interactive_mode:
@@ -713,7 +714,7 @@ def cmd_update():
 def cmd_monitor(agent, action: str, target: str = "", depth: str = "quick"):
     """定时监控管理。"""
     from secagent.monitor import MonitorDB
-    from secagent.result_parser import is_valid_ip
+    from secagent.result_parser import is_valid_ip, detect_target_type
 
     db = MonitorDB(agent.config.secagent_home)
 
@@ -840,7 +841,7 @@ def parse_and_execute(agent, input_str: str, interactive_mode: bool = False) -> 
 
     # 直接输入域名/IP（无斜杠前缀）
     if not input_str.startswith("/"):
-        if is_valid_ip(input_str) or "." in input_str:
+        if is_valid_ip(input_str) or "." in input_str or detect_target_type(input_str) in ("hash", "cve"):
             cmd_analyze(agent, input_str, interactive_mode=interactive_mode)
         else:
             console.print(f"[yellow]未识别: {input_str}[/yellow]")
