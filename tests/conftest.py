@@ -21,8 +21,8 @@ def tmp_home():
 
 @pytest.fixture
 def builtin_skills_dir():
-    """项目内置技能目录。"""
-    return Path(__file__).parent.parent / "skills"
+    """项目内置技能目录（包内）。"""
+    return Path(__file__).parent.parent / "secagent" / "skills"
 
 
 @pytest.fixture

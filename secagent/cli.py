@@ -621,21 +621,33 @@ def cmd_analyze(agent, target: str, fmt: str = "text", depth: str = "standard",
         run_analyze_sync(agent, target, fmt, depth, output_file)
 
 
-async def _run_batch(agent, targets):
-    """批量分析：单事件循环内完成所有目标。"""
+async def _run_batch(agent, targets, concurrency=3):
+    """批量分析：并行分析多个目标。
+
+    Args:
+        agent: SecurityAgent 实例
+        targets: 目标列表
+        concurrency: 最大并发数（默认 3，避免 API 限流）
+    """
     results = []
-    try:
-        await agent.connect()
-        for i, t in enumerate(targets, 1):
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _analyze_one(i, t):
+        async with semaphore:
             console.print(f"[dim]分析 {i}/{len(targets)}: {t}[/dim]")
             try:
                 result = await agent.analyze(t, depth="quick", interactive=False)
-                results.append((t, result.risk_level, (result.summary or "")[:40]))
+                return (t, result.risk_level, (result.summary or "")[:40])
             except Exception as e:
-                results.append((t, "错误", str(e)[:40]))
+                return (t, "错误", str(e)[:40])
+
+    try:
+        await agent.connect()
+        tasks = [_analyze_one(i, t) for i, t in enumerate(targets, 1)]
+        results = await asyncio.gather(*tasks)
     finally:
         await agent.disconnect()
-    return results
+    return list(results)
 
 
 def cmd_batch(agent, filepath: str):

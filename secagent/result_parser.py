@@ -84,11 +84,13 @@ class AnalysisResult:
 
 
 def is_valid_ip(target: str) -> bool:
-    """简单 IPv4 校验。"""
-    parts = target.split(".")
-    if len(parts) != 4:
+    """校验 IPv4 和 IPv6 地址。"""
+    import ipaddress
+    try:
+        ipaddress.ip_address(target.strip())
+        return True
+    except ValueError:
         return False
-    return all(p.isdigit() and 0 <= int(p) <= 255 for p in parts)
 
 
 def is_hash(target: str) -> bool:

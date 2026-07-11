@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -359,6 +360,7 @@ class SecurityAgent:
         model: str,
         on_tool_call: Callable[[str, dict], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
+        on_stream: Callable[[str], None] | None = None,
         extra_tools_used: list[str] | None = None,
     ) -> tuple[str, Any]:
         """执行 LLM tool-calling 循环。
@@ -368,8 +370,9 @@ class SecurityAgent:
             tool_defs: 工具定义
             model: 使用的模型
             on_tool_call: 工具调用回调
-            on_thinking: 思考过程回调，显示 LLM 的中间推理
-            extra_tools_used: 追加工具调用记录到这个列表（用于追问场景）
+            on_thinking: 思考过程回调
+            on_stream: 流式输出回调（最终回复时逐块调用）
+            extra_tools_used: 追加工具调用记录到这个列表
 
         Returns:
             (final_output, last_message)
@@ -391,29 +394,74 @@ class SecurityAgent:
                     tools=tool_defs if tool_defs else None,
                     temperature=self.config.llm.temperature,
                     max_tokens=self.config.llm.max_tokens,
+                    stream=True,
                 )
             except Exception as e:
                 logger.error("LLM 调用失败 (迭代 %d): %s", iteration, e)
                 final_output = f"LLM 调用失败: {e}"
                 break
 
-            choice = response.choices[0]
-            msg = choice.message
+            # 流式读取完整响应
+            content_buf = ""
+            tool_calls_data: dict[int, dict] = {}  # index -> {id, name, arguments}
+            reasoning_buf = ""
+
+            for chunk in response:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if not delta:
+                    continue
+
+                # reasoning_content（DeepSeek Reasoner）
+                rc = getattr(delta, "reasoning_content", None)
+                if rc:
+                    reasoning_buf += rc
+
+                # 文本内容
+                if delta.content:
+                    content_buf += delta.content
+                    if on_stream:
+                        on_stream(delta.content)
+
+                # 工具调用
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_calls_data:
+                            tool_calls_data[idx] = {"id": "", "name": "", "arguments": ""}
+                        if tc_delta.id:
+                            tool_calls_data[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_data[idx]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_calls_data[idx]["arguments"] += tc_delta.function.arguments
+
+            # 构造 msg 对象（兼容原有逻辑）
+            msg = SimpleNamespace()
+            msg.content = content_buf
+            msg.reasoning_content = reasoning_buf or None
+            msg.tool_calls = []
+            if tool_calls_data:
+                for idx in sorted(tool_calls_data.keys()):
+                    d = tool_calls_data[idx]
+                    tc = SimpleNamespace()
+                    tc.id = d["id"]
+                    tc.function = SimpleNamespace()
+                    tc.function.name = d["name"]
+                    tc.function.arguments = d["arguments"]
+                    msg.tool_calls.append(tc)
 
             # 展示思考过程
             if on_thinking:
-                # DeepSeek Reasoner 的 reasoning_content
-                reasoning = getattr(msg, "reasoning_content", None)
-                if reasoning:
-                    on_thinking(reasoning)
-                # 普通模型的中间推理文本（伴随工具调用时的 content）
-                elif msg.content and msg.tool_calls:
-                    on_thinking(msg.content)
+                if reasoning_buf:
+                    on_thinking(reasoning_buf)
+                elif content_buf and msg.tool_calls:
+                    on_thinking(content_buf)
 
             # 将 assistant 消息加入历史
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
-                "content": msg.content or "",
+                "content": content_buf,
             }
             if msg.tool_calls:
                 assistant_msg["tool_calls"] = [
@@ -430,8 +478,7 @@ class SecurityAgent:
             messages.append(assistant_msg)
 
             if not msg.tool_calls:
-                # 没有工具调用 = 最终结果
-                final_output = msg.content or ""
+                final_output = content_buf
                 break
 
             # 并行执行工具调用
@@ -459,7 +506,7 @@ class SecurityAgent:
                         extra_args["verify_ssl"] = self.config.web_fetch_verify_ssl
                     tool_tasks.append(BUILTIN_TOOLS[tool_name](**args, **extra_args))
                 else:
-                    tool_tasks.append(self.mcp.call_tool(tool_name, args))
+                    tool_tasks.append(self._call_tool_with_retry(tool_name, args))
 
             results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
@@ -482,6 +529,20 @@ class SecurityAgent:
             final_output = msg.content if msg and msg.content else "分析未完成（达到最大迭代次数）"
 
         return final_output, msg
+
+    async def _call_tool_with_retry(self, tool_name: str, args: dict, max_retries: int = 2) -> Any:
+        """调用 MCP 工具，失败时自动重试。"""
+        last_error: Exception = RuntimeError("unreachable")
+        for attempt in range(max_retries + 1):
+            try:
+                return await self.mcp.call_tool(tool_name, args)
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning("工具 %s 调用失败 (尝试 %d/%d): %s",
+                                   tool_name, attempt + 1, max_retries + 1, e)
+                    await asyncio.sleep(1 * (attempt + 1))
+        raise last_error
 
     def _post_analyze_learning(
         self,
