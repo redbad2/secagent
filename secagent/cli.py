@@ -76,6 +76,7 @@ SLASH_COMMANDS = {
     },
     "/config": {
         "show": None,
+        "export": None,
         "model": None,
     },
     "/monitor": {
@@ -96,7 +97,7 @@ SLASH_HELP = {
     "/skills": "技能管理: /skills list | /skills show <name> | /skills delete <name>",
     "/memory": "记忆管理: /memory show | /memory add <fact> | /memory search <kw> | /memory clear",
     "/history": "历史: /history list | /history show <目标名|#序号> | /history search <keyword> | /history clear",
-    "/config": "配置: /config show | /config model <name>",
+    "/config": "配置: /config show | /config export [文件] | /config model <name>",
     "/monitor": "监控: /monitor list | /monitor add <target> | /monitor remove <target> | /monitor run | /monitor history <target>",
     "/end": "结束当前分析会话（在追问模式下）",
     "/new": "结束当前会话，开始新分析",
@@ -521,6 +522,38 @@ def cmd_config(agent, action: str, args: str):
         table.add_row("mcp_servers", ", ".join(agent.config.mcp_servers.keys()))
         console.print(table)
         console.print()
+
+    elif action == "export":
+        # 导出完整配置（含 key），用于复制到新机器
+        import yaml as _yaml
+        output = args.strip() or str(agent.config.secagent_home / "config.export.yaml")
+        config = {
+            "llm": {
+                "base_url": agent.config.llm.base_url,
+                "api_key": agent.config.llm.api_key,
+                "model": agent.config.llm.model,
+                "temperature": agent.config.llm.temperature,
+            },
+            "agent": {
+                "max_iterations": agent.config.max_iterations,
+                "timeout": agent.config.timeout,
+            },
+            "web_fetch": {
+                "enabled": agent.config.web_fetch_enabled,
+                "verify_ssl": agent.config.web_fetch_verify_ssl,
+            },
+            "exa": {"enabled": agent.config.exa_enabled},
+            "mcp_servers": {},
+        }
+        for name, conf in agent.config.mcp_servers.items():
+            server = {"url": conf.url}
+            if conf.headers:
+                server["headers"] = dict(conf.headers)
+            config["mcp_servers"][name] = server
+        text = _yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        Path(output).write_text(text, encoding="utf-8")
+        console.print(f"[green]配置已导出到: {output}[/green]")
+        console.print(f"[dim]复制到新机器的 ~/.secagent/config.yaml 即可使用[/dim]\n")
 
     elif action == "model":
         model = args.strip()
