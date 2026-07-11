@@ -526,7 +526,17 @@ def cmd_config(agent, action: str, args: str):
     elif action == "export":
         # 导出完整配置（含 key），用于复制到新机器
         import yaml as _yaml
+        import re as _re
         output = args.strip() or str(agent.config.secagent_home / "config.export.yaml")
+
+        def _resolve_env(val):
+            """将 ${VAR_NAME} 替换为环境变量的实际值。"""
+            if not isinstance(val, str):
+                return val
+            def _replace(m):
+                return os.environ.get(m.group(1), m.group(0))
+            return _re.sub(r'\$\{(\w+)\}', _replace, val)
+
         config = {
             "llm": {
                 "base_url": agent.config.llm.base_url,
@@ -548,7 +558,7 @@ def cmd_config(agent, action: str, args: str):
         for name, conf in agent.config.mcp_servers.items():
             server = {"url": conf.url}
             if conf.headers:
-                server["headers"] = dict(conf.headers)
+                server["headers"] = {k: _resolve_env(v) for k, v in conf.headers.items()}
             config["mcp_servers"][name] = server
         text = _yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
         Path(output).write_text(text, encoding="utf-8")
