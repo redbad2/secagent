@@ -124,10 +124,19 @@ def parse_analysis_result(
     target_type: str,
     llm_output: str,
     tools_used: list[str],
+    llm_client: Any = None,
+    llm_model: str = "",
 ) -> AnalysisResult:
     """从 LLM 最终回复中提取结构化结果。
 
-    LLM 被要求在回复末尾输出 JSON 块，这里负责提取和兜底。
+    提取策略（按优先级）：
+    1. 正则匹配 markdown JSON 围栏 ```json...```
+    2. 正则匹配裸 JSON（包含 risk_level 字段）
+    3. LLM 结构化提取（最稳健，需要 llm_client）
+
+    Args:
+        llm_client: OpenAI 客户端（可选，用于结构化提取 fallback）
+        llm_model: 使用的模型名
     """
     result = AnalysisResult(
         target=target,
@@ -173,12 +182,54 @@ def parse_analysis_result(
     else:
         _try_extract_bare_json(llm_output, result)
 
-    # 兜底：如果没有 findings，把 LLM 输出截断作为 findings
+    # 兜底：如果没有 findings，尝试 LLM 结构化提取
+    if (not result.findings or result.risk_level == "未知") and llm_client and llm_output.strip():
+        try:
+            structured = _llm_extract_result(llm_client, llm_model, llm_output)
+            if structured:
+                result.risk_level = structured.get("risk_level", result.risk_level)
+                result.confidence = float(structured.get("confidence", result.confidence))
+                result.summary = structured.get("summary", result.summary)
+                result.recommendation = structured.get("recommendation", result.recommendation)
+                if structured.get("findings"):
+                    raw = structured["findings"]
+                    result.findings = [f.get("conclusion", str(f)) if isinstance(f, dict) else str(f) for f in raw]
+                if structured.get("iocs"):
+                    result.iocs = structured["iocs"]
+        except Exception:
+            pass
+
+    # 最终兜底：截断 LLM 输出作为 findings
     if not result.findings and llm_output:
         result.findings = [llm_output[:200] + "..." if len(llm_output) > 200 else llm_output]
         result.summary = result.summary or llm_output[:100]
 
     return result
+
+
+def _llm_extract_result(llm_client: Any, model: str, text: str) -> dict[str, Any] | None:
+    """用 LLM 的结构化输出从分析报告中提取 JSON。"""
+    try:
+        resp = llm_client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "从以下安全分析报告中提取 JSON 结果。只输出 JSON，不要其他内容。\n"
+                    "JSON 格式：{risk_level, confidence, summary, recommendation, findings, iocs}\n\n"
+                    f"{text[-8000:]}"  # 只取末尾 8000 字符
+                ),
+            }],
+            temperature=0.0,
+            max_tokens=1024,
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content
+        if content:
+            return json.loads(content)
+    except Exception:
+        pass
+    return None
 
 
 def _try_extract_bare_json(text: str, result: AnalysisResult) -> None:

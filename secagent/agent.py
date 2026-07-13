@@ -235,6 +235,8 @@ class SecurityAgent:
             target_type=target_type,
             llm_output=final_output,
             tools_used=tools_used,
+            llm_client=self.llm,
+            llm_model=self.config.models.fast,
         )
 
         # 保存会话状态（批量模式跳过，避免并发冲突）
@@ -346,6 +348,8 @@ class SecurityAgent:
             target_type=self._session_target_type,
             llm_output=final_output,
             tools_used=self._session_tools_used,
+            llm_client=self.llm,
+            llm_model=self.config.models.fast,
         )
 
         # 更新存档
