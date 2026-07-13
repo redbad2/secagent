@@ -122,8 +122,9 @@ class MCPManager:
                         description=tool.description or "",
                         input_schema=tool.inputSchema or {"type": "object", "properties": {}},
                     ))
-            except Exception as e:
-                logger.warning("从 %s 发现工具失败: %s", name, e)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception) as e:
+                logger.warning("从 %s 发现工具失败（已跳过）: %s", name, type(e).__name__)
+                self._failed_servers.add(name)
 
     @property
     def connected(self) -> bool:
