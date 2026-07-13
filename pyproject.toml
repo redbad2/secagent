@@ -2,7 +2,7 @@
 name = "secagent"
 version = "0.2.0"
 description = "CLI 安全分析 Agent - 域名/IP 安全风险判断"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "secagent" }]
 readme = "README.md"
