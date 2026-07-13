@@ -80,8 +80,9 @@ class MCPManager:
         from mcp import ClientSession
 
         headers = dict(conf.headers)
+        headers.setdefault("Accept", "application/json, text/event-stream")
         # enter context manager and keep it alive
-        ctx = streamablehttp_client(conf.url, headers=headers)
+        ctx = streamablehttp_client(conf.url, headers=headers, timeout=conf.timeout)
         read, write, extras = await ctx.__aenter__()
         session = ClientSession(read, write)
         await session.__aenter__()
