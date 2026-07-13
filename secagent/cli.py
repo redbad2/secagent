@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import threading
+from concurrent.futures import CancelledError
 from pathlib import Path
 
 from rich.console import Console
@@ -285,12 +286,30 @@ class _AsyncLoopRunner:
             self._loop = None
             self._thread = None
 
-    def run(self, coro):
-        """在后台循环中运行协程，阻塞等待结果。"""
+    def run(self, coro, timeout=300):
+        """在后台循环中运行协程，阻塞等待结果。
+
+        Args:
+            coro: 协程对象
+            timeout: 最大等待秒数（默认 300 秒）
+
+        Returns:
+            协程返回值
+
+        Raises:
+            TimeoutError: 超时
+            Exception: 协程内部异常
+        """
         if self._loop is None:
             self.start()
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result()  # 阻塞直到完成
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError:
+            future.cancel()
+            raise TimeoutError(f"操作超时（{timeout}秒），可能是 MCP 服务器或 LLM API 响应过慢")
+        except CancelledError:
+            raise RuntimeError("操作被取消，可能是事件循环已关闭")
 
 
 _loop_runner = _AsyncLoopRunner()
