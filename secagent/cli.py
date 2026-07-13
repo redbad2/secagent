@@ -1021,17 +1021,18 @@ def run_interactive(agent):
 
             # 会话模式下的输入处理
             if in_session:
-                if user_input.strip() in ("/end", "/done", "/exit", "/quit"):
-                    # 结束会话
+                if user_input.strip() in ("/end", "/done"):
+                    # 结束会话（不退出 REPL）
                     console.print("[dim]结束分析会话...[/dim]")
                     _end_session_sync(agent)
                     in_session = False
                     session_target = ""
-                    if user_input.strip() in ("/exit", "/quit"):
-                        console.print("[dim]再见[/dim]")
-                        break
                     console.print("[green]会话已结束。可输入新目标开始新分析。[/green]\n")
                     continue
+                elif user_input.strip() in ("/exit", "/quit"):
+                    # 直接退出，不触发事后学习
+                    console.print("[dim]再见[/dim]")
+                    break
                 elif user_input.strip() == "/new":
                     # 开始新分析（先结束当前）
                     _end_session_sync(agent)
