@@ -136,8 +136,13 @@ def parse_analysis_result(
         tools_used=tools_used,
     )
 
-    # 尝试提取末尾的 JSON 块
-    json_blocks = re.findall(r"```json\s*\n(.*?)\n```", llm_output, re.DOTALL)
+    # 尝试提取末尾的 JSON 块（用更宽松的正则）
+    json_blocks = re.findall(r"```json\s*\n(.*?)\n\s*```", llm_output, re.DOTALL)
+    if not json_blocks:
+        # fallback: 找任何 {} 包裹的 JSON
+        json_blocks = re.findall(r"\{[\s\S]*\"risk_level\"[\s\S]*\}", llm_output)
+        if json_blocks:
+            json_blocks = [json_blocks[-1]]  # 取最后一个
     if json_blocks:
         try:
             data = json.loads(json_blocks[-1])
