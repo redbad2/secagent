@@ -123,7 +123,8 @@ SLASH_HELP = {
     "/skills": "技能管理: /skills list | /skills show <name> | /skills delete <name>",
     "/memory": "记忆管理: /memory show | /memory add <fact> | /memory search <kw> | /memory clear",
     "/history": "历史: /history list | /history show <目标名|#序号> | /history search <keyword> | /history clear",
-    "/config": "配置: /config show | /config export [文件] | /config model <name>",
+    "/config": "配置: /config show | /config export [文件]",
+    "/models": "模型管理: /models show | /models switch <model>",
     "/monitor": "监控: /monitor list | /monitor add <target> | /monitor remove <target> | /monitor run | /monitor history <target>",
     "/end": "结束当前分析会话（在追问模式下）",
     "/new": "结束当前会话，开始新分析",
@@ -616,6 +617,36 @@ def cmd_history(agent, action: str, args: str):
         console.print("[green]历史已清空[/green]\n")
 
 
+
+def cmd_models(agent, action: str, args: str):
+    """模型管理：查看和切换模型。"""
+    config = agent.config
+    router = config.models
+    current = config.llm.model
+
+    if action in ("", "show", "list"):
+        table = Table(title=f"模型配置 (当前: {current})")
+        table.add_column("用途", style="cyan")
+        table.add_column("模型", style="green")
+        table.add_column("切换命令", style="dim")
+        for label, name in [("快速 (quick)", router.fast), ("标准 (standard)", router.standard), ("深度 (reasoning)", router.reasoning)]:
+            marker = " ← 当前" if name == current else ""
+            switch_cmd = f"/models switch {name}" if name != current else ""
+            table.add_row(label, name + marker, switch_cmd)
+        console.print(table)
+        console.print(f"\n[dim]API: {config.llm.base_url}[/dim]\n")
+
+    elif action == "switch":
+        if not args:
+            console.print("[red]用法: /models switch <model_name>[/red]\n")
+            return
+        config.llm.model = args.strip()
+        console.print(f"[green]已切换到模型: {args.strip()}[/green]\n")
+        console.print("[dim]注意: 此更改仅对当前会话生效，重启后恢复默认[/dim]\n")
+
+    else:
+        console.print(f"[red]未知操作: {action}[/red]\n")
+
 def cmd_config(agent, action: str, args: str):
     if action in ("show", ""):
         table = Table(title="当前配置")
@@ -991,6 +1022,8 @@ def parse_and_execute(agent, input_str: str, interactive_mode: bool = False) -> 
         cmd_memory(agent, action, args)
     elif cmd == "/history":
         cmd_history(agent, action, args)
+    elif cmd == "/models":
+        cmd_models(agent, action, args)
     elif cmd == "/config":
         cmd_config(agent, action, args)
     elif cmd == "/monitor":
