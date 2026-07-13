@@ -143,6 +143,27 @@ PROMPT_STYLE = Style.from_dict({
 # Result display
 # ====================================================================
 
+
+def _strip_post_json_noise(text: str) -> str:
+    """截掉 LLM 输出中 JSON 块之后的内心独白和重复摘要。"""
+    import re
+    # 找到最后一个 ```json ... ``` 块的位置
+    m = re.search(r'```json\s*\n.*?\n\s*```', text, re.DOTALL)
+    if m:
+        return text[:m.end()].rstrip()
+    # fallback: 找最后一个包含 risk_level 的 JSON 对象
+    idx = text.rfind('"risk_level"')
+    if idx > 0:
+        brace_start = text.rfind('{', 0, idx)
+        if brace_start >= 0:
+            depth = 0
+            for j in range(brace_start, len(text)):
+                if text[j] == '{': depth += 1
+                elif text[j] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return text[:j + 1].rstrip()
+    return text
 def display_result(result, fmt: str = "text", output_file: str | None = None):
     """渲染分析结果。"""
     if fmt == "json":
@@ -167,10 +188,11 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
         )
         console.print(Panel(header, title="分析结果", border_style="cyan"))
 
-        # 渲染完整分析报告（LLM 原始输出优先）
+        # 渲染完整分析报告（LLM 原始输出，截掉 JSON 后的自言自语）
         if result.raw_output:
+            clean = _strip_post_json_noise(result.raw_output)
             console.print()
-            console.print(Markdown(result.raw_output))
+            console.print(Markdown(clean))
             console.print()
         else:
             if result.summary:
