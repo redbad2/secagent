@@ -127,6 +127,7 @@ SLASH_HELP = {
     "/monitor": "监控: /monitor list | /monitor add <target> | /monitor remove <target> | /monitor run | /monitor history <target>",
     "/end": "结束当前分析会话（在追问模式下）",
     "/new": "结束当前会话，开始新分析",
+    "/save": "保存当前分析经验为技能",
     "/help": "显示帮助",
     "/exit": "退出",
     "/quit": "退出",
@@ -376,6 +377,33 @@ def cmd_help():
         table.add_row(cmd, desc)
     console.print(table)
     console.print("\n[dim]也可以直接输入域名或IP进行分析，无需 /analyze 前缀[/dim]\n")
+
+
+def cmd_save_skill(agent, args: str):
+    """保存分析经验为技能。"""
+    parts = args.strip().split(":", 1)
+    name = parts[0].strip() if parts else ""
+    trigger = parts[1].strip() if len(parts) > 1 else ""
+    if not name:
+        console.print("[red]用法: /save <技能名>:<触发词>[/red]\n")
+        console.print("[dim]也可以用 /save 不带参数，让 LLM 帮你生成技能内容[/dim]\n")
+        return
+    console.print(f"[yellow]请粘贴技能内容（Markdown 格式，以空行结束）:[/yellow]")
+    lines = []
+    while True:
+        try:
+            line = input()
+            if not line:
+                break
+            lines.append(line)
+        except (EOFError, KeyboardInterrupt):
+            break
+    content = "\n".join(lines)
+    if not content.strip():
+        console.print("[red]内容为空，已取消[/red]\n")
+        return
+    path = agent.save_user_skill(name, content, trigger)
+    console.print(f"[green]技能已保存: {path}[/green]\n")
 
 
 def cmd_skills(agent, action: str, args: str):
@@ -925,6 +953,8 @@ def parse_and_execute(agent, input_str: str, interactive_mode: bool = False) -> 
         return True
     elif cmd == "/help":
         cmd_help()
+    elif cmd == "/save":
+        cmd_save_skill(agent, rest)
     elif cmd == "/analyze":
         cmd_analyze(agent, rest, interactive_mode=interactive_mode)
     elif cmd == "/batch":

@@ -112,3 +112,39 @@ async def web_fetch(url: str, timeout: int = 15, verify_ssl: bool = False) -> st
 BUILTIN_TOOLS: dict[str, Any] = {
     "web_fetch__fetch": web_fetch,
 }
+
+
+# LLM 可调用的 save_skill 工具定义
+SAVE_SKILL_TOOL_DEF = {
+    "type": "function",
+    "function": {
+        "name": "save_skill",
+        "description": (
+            "将当前分析中发现的有价值的分析方法/模式保存为技能（SKILL.md），"
+            "供后续分析复用。当你发现一个通用的分析模式、判断规则、或误报处理方法时调用此工具。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "技能名称，如 'cdn-domain-false-positive'",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "技能内容（Markdown 格式），包含触发条件、分析步骤、判断规则",
+                },
+                "trigger": {
+                    "type": "string",
+                    "description": "触发关键词，逗号分隔，如 'domain,cdn,false-positive'",
+                },
+            },
+            "required": ["name", "content", "trigger"],
+        },
+    },
+}
+
+
+async def _save_skill_builtin(name: str, content: str, trigger: str) -> str:
+    """内置 save_skill 工具：需要外部注入 agent 实例才能工作。"""
+    return f"[错误] save_skill 未初始化，请检查 agent 配置"

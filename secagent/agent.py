@@ -74,6 +74,20 @@ class SecurityAgent:
         self._session_tool_defs: list[dict[str, Any]] = []
         self._session_model: str = ""
 
+        # 注入 save_skill 内置工具，让 LLM 可以在分析中保存技能
+        import secagent.web_fetch as _wf
+        agent_self = self
+
+        async def _save_skill_wrapper(name: str, content: str, trigger: str) -> str:
+            try:
+                path = agent_self.save_user_skill(name, content, trigger)
+                return f"[保存成功] 技能已保存到: {path}"
+            except Exception as e:
+                return f"[保存失败] {e}"
+
+        _wf._save_skill_builtin = _save_skill_wrapper
+        _wf.BUILTIN_TOOLS["save_skill"] = _wf._save_skill_builtin
+
     async def connect(self, target_type: str | None = None) -> None:
         """连接 MCP server。可按目标类型过滤。
 
@@ -189,10 +203,12 @@ class SecurityAgent:
             logger.warning("没有可用的 MCP 工具，LLM 将仅基于自身知识分析")
 
         # 内置 web_fetch 工具（可选）
-        from secagent.web_fetch import WEB_FETCH_TOOL_DEF, BUILTIN_TOOLS
+        from secagent.web_fetch import WEB_FETCH_TOOL_DEF, SAVE_SKILL_TOOL_DEF, BUILTIN_TOOLS
         if self.config.web_fetch_enabled:
             tool_defs = tool_defs + [WEB_FETCH_TOOL_DEF]
             logger.info("web_fetch 工具已启用")
+        # save_skill 内置工具（始终可用）
+        tool_defs = tool_defs + [SAVE_SKILL_TOOL_DEF]
 
         # 多模型路由：按深度选择模型
         selected_model = self.config.models.select(depth, self.config.llm.model)
@@ -606,12 +622,19 @@ class SecurityAgent:
             return []
 
     def add_memory(self, fact: str) -> None:
-        """手动添加记忆。"""
+        """公开接口：添加记忆。"""
         self.memory.add(fact)
 
     def search_history(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """搜索历史会话。"""
+        """公开接口：搜索历史。"""
         return self.sessions.search(query, limit=limit)
+
+    def save_user_skill(self, name: str, content: str, trigger: str = "") -> str:
+        """保存用户技能（公共接口，供 CLI /save 和 LLM 工具使用）。"""
+        if not trigger:
+            trigger = "manual"
+        path = self.skills.create_skill(name, content, trigger)
+        return str(path)
 
 
 def _find_builtin_skills() -> Any:
