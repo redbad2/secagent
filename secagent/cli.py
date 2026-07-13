@@ -167,18 +167,22 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
         )
         console.print(Panel(header, title="分析结果", border_style="cyan"))
 
-        if result.summary:
-            console.print(f"\n[bold]摘要:[/bold] {result.summary}")
-
-        if result.findings:
-            console.print("\n[bold]发现:[/bold]")
-            for f in result.findings:
-                console.print(f"  - {f}")
-
-        if result.iocs:
-            console.print(f"\n[bold]IOC:[/bold]")
-            for ioc in result.iocs:
-                console.print(f"  - {ioc}")
+        # 渲染完整分析报告（LLM 原始输出优先）
+        if result.raw_output:
+            console.print()
+            console.print(Markdown(result.raw_output))
+            console.print()
+        else:
+            if result.summary:
+                console.print(f"\n[bold]摘要:[/bold] {result.summary}")
+            if result.findings:
+                console.print("\n[bold]发现:[/bold]")
+                for f in result.findings:
+                    console.print(f"  - {f}")
+            if result.iocs:
+                console.print(f"\n[bold]IOC:[/bold]")
+                for ioc in result.iocs:
+                    console.print(f"  - {ioc}")
 
         if result.tools_used:
             console.print(f"\n[bold]使用工具[/bold] ({len(result.tools_used)}): "
