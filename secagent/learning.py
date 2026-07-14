@@ -161,11 +161,21 @@ class SkillStore:
                 skills.append(skill)
         return skills
 
-    def find_relevant(self, target_type: str, target: str = "") -> list[Skill]:
-        """匹配相关技能。"""
+    def find_relevant(self, target_type: str, target: str = "", depth: str = "standard") -> list[Skill]:
+        """匹配相关技能。
+
+        Args:
+            target_type: 目标类型（domain/ip/hash/cve）
+            target: 目标值
+            depth: 分析深度。deep 时额外加载带 "deep"/"correlation" 触发词的技能
+                   （如 threat-intel-correlation 多源交叉验证技能），其余深度不加载
+        """
         all_skills = self.load_all()
         relevant = []
         ctx = f"{target_type} {target}".lower()
+        # deep 深度时，把 "deep"/"correlation" 作为有效匹配上下文
+        if depth == "deep":
+            ctx += " deep correlation multiple"
         for skill in all_skills:
             trigger = skill.trigger.lower()
             if not trigger:

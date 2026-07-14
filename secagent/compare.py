@@ -81,6 +81,20 @@ def display_comparison(target: str, results: dict[str, AnalysisResult]):
         console.print(f"\n[yellow]策略分歧: 风险等级不一致 ({', '.join(risk_levels)})[/yellow]")
         console.print("[dim]建议人工复查分歧原因[/dim]")
 
+    # 工具集合差异：哪些工具只被某个深度调用
+    all_tools_by_depth = {d: set(results[d].tools_used) for d in results}
+    union_tools = set().union(*all_tools_by_depth.values())
+    if len(results) >= 2 and union_tools:
+        console.print(f"\n[bold]工具调用差异[/bold] (共 {len(union_tools)} 个不同工具)")
+        depth_names = list(results.keys())
+        for tool in sorted(union_tools):
+            called_by = [d for d in depth_names if tool in all_tools_by_depth[d]]
+            if len(called_by) == len(depth_names):
+                continue  # 所有深度都调了，不展示（减少噪音）
+            missing = [d for d in depth_names if d not in called_by]
+            console.print(f"  [cyan]{tool}[/cyan]: 仅 [green]{', '.join(called_by)}[/green] 调用，"
+                          f"[dim]{', '.join(missing)} 未调用[/dim]")
+
     console.print()
 
 

@@ -73,6 +73,7 @@ class SecurityAgent:
         self._session_tools_used: list[str] = []
         self._session_tool_defs: list[dict[str, Any]] = []
         self._session_model: str = ""
+        self._session_max_iter: int = 10
 
         # 注入 save_skill 内置工具，让 LLM 可以在分析中保存技能
         import secagent.web_fetch as _wf
@@ -88,11 +89,13 @@ class SecurityAgent:
         _wf._save_skill_builtin = _save_skill_wrapper
         _wf.BUILTIN_TOOLS["save_skill"] = _wf._save_skill_builtin
 
-    async def connect(self, target_type: str | None = None) -> None:
+    async def connect(self, target_type: str | None = None, depth: str = "standard") -> None:
         """连接 MCP server。可按目标类型过滤。
 
         Args:
             target_type: "domain" / "ip" / "hash" / "cve" / None(全部)
+            depth: 分析深度。deep 额外连接辅助 server（OPTIONAL_SERVERS 中已配置的），
+                   用于关联资产查询和多源交叉验证；quick/standard 只连核心 server
         """
         if target_type == "domain":
             server_names = set(DOMAIN_SERVERS)
@@ -112,10 +115,18 @@ class SecurityAgent:
             # 全部连接但排除 exa
             server_names = set(self.config.mcp_servers.keys()) - {EXA_SERVER}
 
+        # deep 深度：额外连接辅助 server（grep_app/context7/brave 等），用于关联资产和交叉验证
+        # 只连接用户实际配置过的辅助 server，避免连接不存在的 server
+        if depth == "deep" and server_names is not None:
+            configured_optional = set(self.config.mcp_servers.keys()) & OPTIONAL_SERVERS
+            if configured_optional:
+                server_names = server_names | configured_optional
+                logger.info("deep 深度：额外连接辅助 server: %s", ", ".join(configured_optional))
+
         await self.mcp.connect_all(server_names=server_names)
         self._connected = True
-        logger.info("Agent 就绪: %d 个 MCP 工具可用 (目标类型=%s)",
-                     len(self.mcp.tools), target_type or "all")
+        logger.info("Agent 就绪: %d 个 MCP 工具可用 (目标类型=%s, 深度=%s)",
+                     len(self.mcp.tools), target_type or "all", depth)
 
         # 检查核心 server 是否连接失败
         failed_critical = self.mcp.failed_servers & CRITICAL_SERVERS
@@ -176,12 +187,12 @@ class SecurityAgent:
         if not self._connected:
             # 先判断目标类型，用于过滤连接的 MCP server
             _target_type = detect_target_type(target)
-            await self.connect(target_type=_target_type)
+            await self.connect(target_type=_target_type, depth=depth)
 
         target_type = detect_target_type(target)
 
-        # 加载相关技能
-        relevant_skills = self.skills.find_relevant(target_type, target)
+        # 加载相关技能（deep 深度额外加载交叉验证技能）
+        relevant_skills = self.skills.find_relevant(target_type, target, depth=depth)
 
         # 构建系统提示
         system_prompt = build_system_prompt(
@@ -194,11 +205,14 @@ class SecurityAgent:
             exa_enabled=self.config.exa_enabled,
         )
 
-        # 获取工具定义（按目标类型过滤，排除辅助 server）
+        # 获取工具定义
         connected_servers = set(self.mcp._sessions.keys())
-        # 排除辅助 server 的工具，减少 token 消耗
-        core_servers = connected_servers - OPTIONAL_SERVERS
-        tool_defs = self.mcp.get_tool_definitions(server_filter=core_servers)
+        # quick/standard 排除辅助 server 减少 token；deep 保留（已为交叉验证连接）
+        if depth == "deep":
+            tool_servers = connected_servers
+        else:
+            tool_servers = connected_servers - OPTIONAL_SERVERS
+        tool_defs = self.mcp.get_tool_definitions(server_filter=tool_servers)
         if not tool_defs:
             logger.warning("没有可用的 MCP 工具，LLM 将仅基于自身知识分析")
 
@@ -215,6 +229,11 @@ class SecurityAgent:
         if selected_model != self.config.llm.model:
             logger.info("模型路由: %s 深度 -> %s", depth, selected_model)
 
+        # 按深度计算本轮最大迭代数（实质约束，而非仅 prompt 文字）
+        # quick 5 / standard 10 / deep 15，但不超过 config.max_iterations 上限
+        depth_iter_map = {"quick": 5, "standard": 10, "deep": 15}
+        effective_max_iter = min(depth_iter_map.get(depth, 10), self.config.max_iterations)
+
         # Agent 循环
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
@@ -227,6 +246,7 @@ class SecurityAgent:
             on_thinking=on_thinking,
             on_stream=on_stream,
             extra_tools_used=tools_used,
+            max_iterations=effective_max_iter,
         )
 
         # 解析结果
@@ -248,6 +268,7 @@ class SecurityAgent:
             self._session_tools_used = tools_used
             self._session_tool_defs = tool_defs
             self._session_model = selected_model
+            self._session_max_iter = effective_max_iter
 
         # 存档会话（批量模式仍写入 DB，但不写实例状态）
         try:
@@ -322,6 +343,7 @@ class SecurityAgent:
             on_thinking=on_thinking,
             on_stream=on_stream,
             extra_tools_used=self._session_tools_used,
+            max_iterations=self._session_max_iter,
         )
 
         return final_output
@@ -394,6 +416,7 @@ class SecurityAgent:
         on_thinking: Callable[[str], None] | None = None,
         on_stream: Callable[[str], None] | None = None,
         extra_tools_used: list[str] | None = None,
+        max_iterations: int | None = None,
     ) -> tuple[str, Any]:
         """执行 LLM tool-calling 循环。
 
@@ -405,19 +428,22 @@ class SecurityAgent:
             on_thinking: 思考过程回调
             on_stream: 流式输出回调（最终回复时逐块调用）
             extra_tools_used: 追加工具调用记录到这个列表
+            max_iterations: 本轮循环的最大迭代数；None 则用 config 默认值
 
         Returns:
             (final_output, last_message)
         """
         from secagent.web_fetch import BUILTIN_TOOLS
 
+        if max_iterations is None:
+            max_iterations = self.config.max_iterations
         iteration = 0
         msg = None
         final_output = ""
 
-        while iteration < self.config.max_iterations:
+        while iteration < max_iterations:
             iteration += 1
-            logger.debug("Agent 循环 - 迭代 %d/%d", iteration, self.config.max_iterations)
+            logger.debug("Agent 循环 - 迭代 %d/%d", iteration, max_iterations)
 
             try:
                 response = self.llm.chat.completions.create(
@@ -572,7 +598,7 @@ class SecurityAgent:
 
         else:
             # 达到 max_iterations
-            logger.warning("达到最大迭代次数 %d，强制结束", self.config.max_iterations)
+            logger.warning("达到最大迭代次数 %d，强制结束", max_iterations)
             final_output = msg.content if msg and msg.content else "分析未完成（达到最大迭代次数）"
 
         return final_output, msg

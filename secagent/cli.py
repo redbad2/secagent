@@ -1331,8 +1331,9 @@ def main():
     # 加载配置
     config = load_config()
 
-    # 默认 max_iterations 提高到 20，给 LLM 足够空间完成分析+输出 JSON
-    if config.max_iterations < 20:
+    # max_iterations 作为各 depth 的统一上限（depth 自身取 5/10/15，再与该上限取 min）
+    # 默认提到 20，保证 deep 深度（15）不被裁剪
+    if config.max_iterations < 15:
         config.max_iterations = 20
 
     # 验证必要配置
