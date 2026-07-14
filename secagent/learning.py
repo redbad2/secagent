@@ -247,26 +247,28 @@ class SessionDB:
         risk_level: str,
         messages: list[dict[str, Any]],
     ) -> None:
-        self.db.execute(
-            "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                target,
-                target_type,
-                summary,
-                risk_level,
-                json.dumps(messages, ensure_ascii=False),
-                datetime.now().isoformat(),
-            ),
-        )
-        self.db.commit()
+        with self._lock:
+            self.db.execute(
+                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    target,
+                    target_type,
+                    summary,
+                    risk_level,
+                    json.dumps(messages, ensure_ascii=False),
+                    datetime.now().isoformat(),
+                ),
+            )
+            self.db.commit()
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        cursor = self.db.execute(
-            "SELECT target, target_type, summary, risk_level, timestamp "
-            "FROM sessions WHERE sessions MATCH ? ORDER BY timestamp DESC LIMIT ?",
-            (query, limit),
-        )
-        rows = cursor.fetchall()
+        with self._lock:
+            cursor = self.db.execute(
+                "SELECT target, target_type, summary, risk_level, timestamp "
+                "FROM sessions WHERE sessions MATCH ? ORDER BY timestamp DESC LIMIT ?",
+                (query, limit),
+            )
+            rows = cursor.fetchall()
         return [
             {
                 "target": r[0],
@@ -279,12 +281,13 @@ class SessionDB:
         ]
 
     def list_recent(self, limit: int = 20) -> list[dict[str, Any]]:
-        cursor = self.db.execute(
-            "SELECT target, target_type, summary, risk_level, timestamp "
-            "FROM sessions ORDER BY timestamp DESC LIMIT ?",
-            (limit,),
-        )
-        rows = cursor.fetchall()
+        with self._lock:
+            cursor = self.db.execute(
+                "SELECT target, target_type, summary, risk_level, timestamp "
+                "FROM sessions ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            )
+            rows = cursor.fetchall()
         return [
             {
                 "target": r[0],
@@ -298,12 +301,13 @@ class SessionDB:
 
     def get_session(self, target: str) -> dict[str, Any] | None:
         """获取指定目标的最新会话完整内容（含消息）。"""
-        cursor = self.db.execute(
-            "SELECT target, target_type, summary, risk_level, messages, timestamp "
-            "FROM sessions WHERE target = ? ORDER BY timestamp DESC LIMIT 1",
-            (target,),
-        )
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self.db.execute(
+                "SELECT target, target_type, summary, risk_level, messages, timestamp "
+                "FROM sessions WHERE target = ? ORDER BY timestamp DESC LIMIT 1",
+                (target,),
+            )
+            row = cursor.fetchone()
         if not row:
             return None
         return {
@@ -317,12 +321,13 @@ class SessionDB:
 
     def get_session_by_index(self, index: int) -> dict[str, Any] | None:
         """按最近顺序获取会话（0=最新）。"""
-        cursor = self.db.execute(
-            "SELECT target, target_type, summary, risk_level, messages, timestamp "
-            "FROM sessions ORDER BY timestamp DESC LIMIT 1 OFFSET ?",
-            (index,),
-        )
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self.db.execute(
+                "SELECT target, target_type, summary, risk_level, messages, timestamp "
+                "FROM sessions ORDER BY timestamp DESC LIMIT 1 OFFSET ?",
+                (index,),
+            )
+            row = cursor.fetchone()
         if not row:
             return None
         return {
@@ -335,8 +340,9 @@ class SessionDB:
         }
 
     def clear(self) -> None:
-        self.db.execute("DELETE FROM sessions")
-        self.db.commit()
+        with self._lock:
+            self.db.execute("DELETE FROM sessions")
+            self.db.commit()
 
     def close(self) -> None:
         self.db.close()

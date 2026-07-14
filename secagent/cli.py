@@ -228,7 +228,10 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
 
     # json or markdown: print to stdout or file
     if output_file:
-        Path(output_file).write_text(output_text, encoding="utf-8")
+        from secagent.config import secure_write
+        out_path = Path(output_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        secure_write(out_path, output_text)
         console.print(f"[green]报告已保存: {output_file}[/green]\n")
     else:
         if fmt == "markdown":
@@ -673,11 +676,20 @@ def cmd_config(agent, action: str, args: str):
         # 导出完整配置（含 key），用于复制到新机器
         import yaml as _yaml
         import re as _re
-        output = str(agent.config.secagent_home / (args.strip() or "config.export.yaml"))
-        # 安全检查：禁止路径穿越和绝对路径
-        output_path = Path(output).resolve()
-        if not str(output_path).startswith(str(agent.config.secagent_home.resolve())):
-            console.print("[red]错误: 导出路径必须在 " + str(agent.config.secagent_home) + " 内[/red]\n")
+        # 路径必须在 SECAGENT_HOME 内：禁止绝对路径和 .. 穿越
+        # 注意 Path.home() / "/abs" 会变成 "/abs"，故先拒绝绝对/相对根路径
+        raw_name = args.strip() or "config.export.yaml"
+        if Path(raw_name).is_absolute() or Path(raw_name).anchor:
+            console.print("[red]错误: 导出路径必须是相对文件名，不能为绝对路径[/red]\n")
+            return
+        home_resolved = agent.config.secagent_home.resolve()
+        output_path = (home_resolved / raw_name).resolve()
+        try:
+            # relative_to 在路径逃逸 home 时抛 ValueError，比 startswith 更可靠
+            # （避免 /x/secagent-evil 绕过 /x/secagent 的前缀检查）
+            output_path.relative_to(home_resolved)
+        except ValueError:
+            console.print(f"[red]错误: 导出路径必须在 {home_resolved} 内[/red]\n")
             return
 
         def _resolve_env(val):
@@ -713,8 +725,8 @@ def cmd_config(agent, action: str, args: str):
             config["mcp_servers"][name] = server
         text = _yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
         from secagent.config import secure_write
-        secure_write(Path(output), text)
-        console.print(f"[green]配置已导出到: {output}[/green]")
+        secure_write(output_path, text)
+        console.print(f"[green]配置已导出到: {output_path}[/green]")
         console.print(f"[dim]复制到新机器的 ~/.secagent/config.yaml 即可使用[/dim]\n")
 
     elif action == "model":
@@ -801,12 +813,15 @@ def cmd_batch(agent, filepath: str, output_file: str = ""):
     # 导出 CSV
     if output_file:
         import csv
+        import io
+        from secagent.config import secure_write
+        buf = io.StringIO(newline="")
+        w = csv.writer(buf)
+        w.writerow(["目标", "风险", "摘要"])
+        w.writerows([(t, risk, summary) for t, risk, summary in results])
         out = Path(output_file)
         out.parent.mkdir(parents=True, exist_ok=True)
-        with open(out, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["目标", "风险", "摘要"])
-            w.writerows([(t, risk, summary) for t, risk, summary in results])
+        secure_write(out, buf.getvalue())
         console.print(f"[green]结果已导出: {output_file}[/green]\n")
 
 
@@ -1040,6 +1055,7 @@ def parse_and_execute(agent, input_str: str, interactive_mode: bool = False) -> 
     elif cmd == "/analyze":
         cmd_analyze(agent, rest, interactive_mode=interactive_mode)
     elif cmd == "/compare":
+        from secagent.compare import cmd_compare
         cmd_compare(agent, rest)
     elif cmd == "/batch":
         cmd_batch(agent, rest)

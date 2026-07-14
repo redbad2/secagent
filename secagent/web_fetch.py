@@ -71,13 +71,15 @@ async def web_fetch(url: str, timeout: int = 15, verify_ssl: bool = False) -> st
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
-    # SSRF 防护：检查目标是否为内网/保留地址
+    # SSRF 防护：先校验入口 URL
     if not _is_safe_url(url):
         return f"[拒绝] 目标地址为内网/保留地址: {httpx.URL(url).host}"
 
     try:
+        # 手动处理重定向：每一跳都重新做 SSRF 校验，防止 302 跳到内网
+        # （follow_redirects=True 会无校验地跟随，是 SSRF 的经典绕过点）
         async with httpx.AsyncClient(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=timeout,
             verify=verify_ssl,
             headers={
@@ -85,6 +87,22 @@ async def web_fetch(url: str, timeout: int = 15, verify_ssl: bool = False) -> st
             },
         ) as client:
             resp = await client.get(url)
+            hops = 0
+            while resp.is_redirect and hops < 5:
+                hops += 1
+                next_url = str(resp.headers.get("location", ""))
+                if not next_url:
+                    break
+                # 相对路径补全
+                next_url = str(httpx.URL(url).join(next_url))
+                if not _is_safe_url(next_url):
+                    return f"[拒绝] 重定向目标为内网/保留地址: {httpx.URL(next_url).host}"
+                resp = await client.get(next_url)
+                url = next_url
+
+            if resp.is_redirect:
+                return f"[拒绝] 重定向次数超限 (>5)"
+
             content_type = resp.headers.get("content-type", "")
 
             # 检查响应大小，防止超大响应耗尽内存
@@ -156,18 +174,33 @@ async def _save_skill_builtin(name: str, content: str, trigger: str) -> str:
 
 
 def _is_safe_url(url: str) -> bool:
-    """检查 URL 目标是否为内网/保留地址（SSRF 防护）。"""
+    """检查 URL 目标是否为内网/保留地址（SSRF 防护）。
+
+    覆盖：私有/回环/链路本地/保留/组播/未指定/运营商级 NAT (CGN 100.64/10)。
+    DNS rebinding 仅靠前置检查无法完全封堵，本函数提供基础防护。
+    """
     import ipaddress
     try:
         host = httpx.URL(url).host
     except Exception:
         return False
+    if not host:
+        return False
     try:
         info = socket.getaddrinfo(host, None)
-        for item in info:
-            ip = ipaddress.ip_address(item[4][0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                return False
     except socket.gaierror:
         return True  # 无法解析则放行，后续 http 请求自然会失败
+    # CGN 段 100.64.0.0/10 (RFC 6598)，ipaddress 未内置 is_cgn
+    cgn = ipaddress.ip_network("100.64.0.0/10")
+    for item in info:
+        try:
+            ip = ipaddress.ip_address(item[4][0])
+        except ValueError:
+            return False
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False
+        # IPv4-mapped IPv6 的 is_* 判定会反映其内嵌 IPv4，已被上面覆盖
+        if ip.version == 4 and ip in cgn:
+            return False
     return True

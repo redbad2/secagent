@@ -14,14 +14,20 @@ SECAGENT_HOME = Path(os.environ.get("SECAGENT_HOME", str(Path.home() / ".secagen
 
 
 def secure_write(path: Path, data: str, encoding: str = "utf-8") -> None:
-    """安全写入文件：O_CREAT|O_WRONLY|O_TRUNC，权限 0o600。"""
+    """安全写入文件：O_CREAT|O_WRONLY|O_TRUNC，权限 0o600。
+
+    fdopen 成功后会接管 fd 的所有权（包括异常时关闭），故不可在外层
+    再 os.close(fd)，否则会 double-close 并可能误关被复用的其他 fd。
+    """
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # os.fdopen 接管 fd：正常退出由 with 关闭；仅当 fdopen 自身失败时才需手动 close。
     try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
-            f.write(data)
+        f = os.fdopen(fd, "w", encoding=encoding)
     except Exception:
         os.close(fd)
         raise
+    with f:
+        f.write(data)
 
 
 def secure_mkdir(path: Path, mode: int = 0o700) -> None:
