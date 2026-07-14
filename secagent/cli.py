@@ -1095,7 +1095,14 @@ def run_interactive(agent):
                     session_target = ""
                     continue
                 elif user_input.strip().startswith("/"):
-                    # 会话中的斜杠命令（除了 /end /new /exit /quit）
+                    # 会话中的斜杠命令
+                    cmd = user_input.strip().split()[0]
+                    if cmd == "/analyze":
+                        # 先结束当前会话，避免 connect 跨 task anyio 冲突
+                        console.print("[dim]结束当前会话...[/dim]")
+                        _end_session_sync(agent)
+                        in_session = False
+                        session_target = ""
                     should_exit = parse_and_execute(agent, user_input)
                     if should_exit:
                         _end_session_sync(agent)
