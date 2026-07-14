@@ -83,6 +83,7 @@ BANNER = _build_banner()
 SLASH_COMMANDS = {
     "/analyze": None,
     "/batch": None,
+    "/compare": None,
     "/skills": {
         "list": None,
         "show": None,
@@ -100,6 +101,10 @@ SLASH_COMMANDS = {
         "list": None,
         "clear": None,
     },
+    "/models": {
+        "show": None,
+        "switch": None,
+    },
     "/config": {
         "show": None,
         "export": None,
@@ -112,6 +117,9 @@ SLASH_COMMANDS = {
         "run": None,
         "history": None,
     },
+    "/save": None,
+    "/end": None,
+    "/new": None,
     "/help": None,
     "/exit": None,
     "/quit": None,
@@ -120,6 +128,7 @@ SLASH_COMMANDS = {
 SLASH_HELP = {
     "/analyze": "分析域名或IP: /analyze example.com 或 /analyze 1.2.3.4",
     "/batch": "批量分析: /batch targets.txt",
+    "/compare": "策略对比: /compare example.com",
     "/skills": "技能管理: /skills list | /skills show <name> | /skills delete <name>",
     "/memory": "记忆管理: /memory show | /memory add <fact> | /memory search <kw> | /memory clear",
     "/history": "历史: /history list | /history show <目标名|#序号> | /history search <keyword> | /history clear",
@@ -413,7 +422,6 @@ def cmd_save_skill(agent, args: str):
     trigger = parts[1].strip() if len(parts) > 1 else ""
     if not name:
         console.print("[red]用法: /save <技能名>:<触发词>[/red]\n")
-        console.print("[dim]也可以用 /save 不带参数，让 LLM 帮你生成技能内容[/dim]\n")
         return
     console.print(f"[yellow]请粘贴技能内容（Markdown 格式，以空行结束）:[/yellow]")
     lines = []
@@ -769,7 +777,7 @@ async def _run_batch(agent, targets, concurrency=3):
     return list(results)
 
 
-def cmd_batch(agent, filepath: str):
+def cmd_batch(agent, filepath: str, output_file: str = ""):
     path = Path(filepath.strip())
     if not path.exists():
         console.print(f"[red]文件不存在: {filepath}[/red]\n")
@@ -789,6 +797,17 @@ def cmd_batch(agent, filepath: str):
 
     console.print(table)
     console.print()
+
+    # 导出 CSV
+    if output_file:
+        import csv
+        out = Path(output_file)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["目标", "风险", "摘要"])
+            w.writerows([(t, risk, summary) for t, risk, summary in results])
+        console.print(f"[green]结果已导出: {output_file}[/green]\n")
 
 
 # ====================================================================
@@ -1020,6 +1039,8 @@ def parse_and_execute(agent, input_str: str, interactive_mode: bool = False) -> 
         cmd_save_skill(agent, rest)
     elif cmd == "/analyze":
         cmd_analyze(agent, rest, interactive_mode=interactive_mode)
+    elif cmd == "/compare":
+        cmd_compare(agent, rest)
     elif cmd == "/batch":
         cmd_batch(agent, rest)
     elif cmd == "/skills":
@@ -1277,7 +1298,7 @@ def main():
         agent.close()
         return
     elif args.command == "batch":
-        cmd_batch(agent, args.file)
+        cmd_batch(agent, args.file, output_file=getattr(args, "output", "") or "")
         agent.close()
         return
     elif args.command == "skills":
