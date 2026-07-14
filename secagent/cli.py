@@ -830,7 +830,11 @@ def cmd_batch(agent, filepath: str, output_file: str = ""):
 # ====================================================================
 
 def cmd_update():
-    """升级 secagent：自动检测安装方式并执行升级。"""
+    """升级 secagent：自动检测安装方式并执行升级。
+
+    安全说明：升级会从远程仓库拉取并执行代码，是供应链信任点。
+    升级前明确展示信任源，要求用户确认；任一步骤失败即中止。
+    """
     import subprocess
     import sys
     from pathlib import Path
@@ -848,12 +852,31 @@ def cmd_update():
     if is_dev:
         # 开发模式：git pull + pip install -e .
         console.print("[dim]检测到开发模式（git 仓库）[/dim]")
+        # 展示信任源（远程仓库地址），让用户知情
+        try:
+            r_remote = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                capture_output=True, text=True, cwd=str(pkg_dir),
+            )
+            remote_url = r_remote.stdout.strip() if r_remote.returncode == 0 else "未知"
+        except Exception:
+            remote_url = "未知"
+        console.print(f"[yellow]信任源（远程仓库）: {remote_url}[/yellow]")
+        console.print("[yellow]将执行 git pull + pip install -e .，拉取并运行远程代码。[/yellow]")
+        try:
+            confirm = input("确认升级? (y/N) > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            confirm = ""
+        if confirm not in ("y", "yes"):
+            console.print("[dim]已取消升级[/dim]\n")
+            return
         console.print("正在拉取最新代码...")
         r = subprocess.run(["git", "pull"], capture_output=True, text=True, cwd=str(pkg_dir))
         if r.returncode == 0:
             console.print(f"[green]{r.stdout.strip()}[/green]")
         else:
             console.print(f"[red]git pull 失败: {r.stderr.strip()}[/red]")
+            console.print("[dim]升级已中止[/dim]\n")
             return
         console.print("正在重新安装...")
         r = subprocess.run(
@@ -864,8 +887,18 @@ def cmd_update():
             console.print("[green]升级完成[/green]")
         else:
             console.print(f"[red]pip install 失败: {r.stderr[-200:]}[/red]")
+            return
     else:
         # pipx / pip 安装
+        # 信任源是 PyPI / GitHub 仓库 redbad2/secagent，明确告知
+        console.print("[yellow]信任源: github.com/redbad2/secagent（pip/pipx 会拉取并运行其代码）[/yellow]")
+        try:
+            confirm = input("确认升级? (y/N) > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            confirm = ""
+        if confirm not in ("y", "yes"):
+            console.print("[dim]已取消升级[/dim]\n")
+            return
         pipx_home = Path.home() / ".local" / "pipx"
         if pipx_home.exists():
             console.print("[dim]检测到 pipx 环境[/dim]")
@@ -886,6 +919,7 @@ def cmd_update():
                     console.print("[green]reinstall 完成[/green]")
                 else:
                     console.print(f"[red]升级失败: {r.stderr[-200:]}[/red]")
+                    return
         else:
             console.print("[dim]尝试 pip 升级...[/dim]")
             r = subprocess.run(
@@ -897,6 +931,7 @@ def cmd_update():
                 console.print("[green]升级完成[/green]")
             else:
                 console.print(f"[red]升级失败: {r.stderr[-200:]}[/red]")
+                return
 
     console.print("\n[dim]重启 secagent 以使用新版本[/dim]\n")
 
@@ -1140,8 +1175,9 @@ def run_interactive(agent):
                 elif user_input.strip().startswith("/"):
                     # 会话中的斜杠命令
                     cmd = user_input.strip().split()[0]
-                    if cmd == "/analyze":
-                        # 先结束当前会话，避免 connect 跨 task anyio 冲突
+                    # 这些命令会触发新的 agent.connect()，必须先结束当前会话，
+                    # 否则 MCP session 跨 task 创建/销毁会触发 anyio cancel scope 冲突
+                    if cmd in ("/analyze", "/batch", "/monitor", "/compare"):
                         console.print("[dim]结束当前会话...[/dim]")
                         _end_session_sync(agent)
                         in_session = False

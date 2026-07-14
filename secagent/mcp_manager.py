@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from secagent.config import MCPServerConfig
+from secagent.config import MCPServerConfig, redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +58,13 @@ class MCPManager:
                     await self._connect_http(name, conf)
                 except Exception as e:
                     self._failed_servers.add(name)
-                    logger.warning("MCP server %s 连接失败: %s", name, e)
+                    logger.warning("MCP server %s 连接失败: %s", name, redact_secrets(str(e)))
             elif conf.command:
                 try:
                     await self._connect_stdio(name, conf)
                 except Exception as e:
                     self._failed_servers.add(name)
-                    logger.warning("MCP server %s 连接失败: %s", name, e)
+                    logger.warning("MCP server %s 连接失败: %s", name, redact_secrets(str(e)))
             else:
                 logger.warning("MCP server %s 缺少 url 或 command，跳过", name)
 

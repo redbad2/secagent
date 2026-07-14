@@ -35,6 +35,35 @@ def secure_mkdir(path: Path, mode: int = 0o700) -> None:
     path.mkdir(parents=True, exist_ok=True)
     os.chmod(str(path), mode)
 
+
+# 凭证相关的 header 名（小写），日志中需脱敏
+_SENSITIVE_HEADERS = {
+    "authorization", "x-authtoken", "fdp-access", "fdp-secret",
+    "x-api-key", "api-key", "cookie", "set-cookie", "proxy-authorization",
+}
+
+
+def redact_secrets(text: str) -> str:
+    """对文本中的凭证片段做脱敏，用于日志输出。
+
+    覆盖：header 形式（Authorization: xxx）、URL userinfo（https://user:pass@host）、
+    常见 key/token 形式。仅做日志层防护，不影响实际请求。
+    """
+    import re
+    if not text:
+        return text
+    # 1. URL userinfo: https://key:secret@host -> https://***@host
+    text = re.sub(r"(https?://)[^@\s:/]+:[^@\s:/]+@", r"\1***@", text)
+    # 2. header 形式: Authorization: Bearer xxx / X-AuthToken: xxx
+    #    值可能含空格（如 "Bearer sk-xxx"），匹配到行尾或下一个 header/key=value 边界
+    text = re.sub(
+        r"((?:authorization|x-authtoken|fdp-access|fdp-secret|x-api-key|api-key|cookie)\s*[:=]\s*)([^\n\r]+)",
+        r"\1***",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
 # 按目标类型分组的核心 MCP server
 # 域名分析需要的 server
 DOMAIN_SERVERS = {

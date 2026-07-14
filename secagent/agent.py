@@ -12,7 +12,7 @@ from openai import OpenAI
 
 from secagent.config import (
     AgentConfig, DOMAIN_SERVERS, IP_SERVERS, HASH_SERVERS, CVE_SERVERS,
-    CRITICAL_SERVERS, OPTIONAL_SERVERS, EXA_SERVER,
+    CRITICAL_SERVERS, OPTIONAL_SERVERS, EXA_SERVER, redact_secrets,
 )
 from secagent.learning import MemoryStore, SkillStore, SessionDB, LearningTrigger
 from secagent.mcp_manager import MCPManager
@@ -430,7 +430,7 @@ class SecurityAgent:
                 )
             except Exception as e:
                 # LLM 调用失败：重试一次，然后降级到 fast 模型
-                logger.warning("LLM 调用失败 (迭代 %d): %s，重试中...", iteration, e)
+                logger.warning("LLM 调用失败 (迭代 %d): %s，重试中...", iteration, redact_secrets(str(e)))
                 try:
                     fallback_model = self.config.models.fast or model
                     response = self.llm.chat.completions.create(
@@ -443,8 +443,9 @@ class SecurityAgent:
                     )
                     logger.info("降级到模型 %s 成功", fallback_model)
                 except Exception as e2:
-                    logger.error("LLM 调用重试失败 (迭代 %d): %s", iteration, e2)
-                    final_output = f"LLM 调用失败: {e2}"
+                    _safe_err = redact_secrets(str(e2))
+                    logger.error("LLM 调用重试失败 (迭代 %d): %s", iteration, _safe_err)
+                    final_output = f"LLM 调用失败: {_safe_err}"
                     break
 
             # 流式读取完整响应

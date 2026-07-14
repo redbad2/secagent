@@ -98,10 +98,16 @@ class Skill:
     content: str
     created: str = ""
     file_path: Path = field(default=None, repr=False)  # type: ignore
+    source: str = "builtin"  # "builtin"（包内预置）| "user"（运行时生成）
 
 
 class SkillStore:
     """可复用的分析方法，从分析经验中提炼。"""
+
+    # 技能参数上限：防止 LLM/注入写入超大或异常技能内容
+    MAX_NAME_LEN = 64
+    MAX_TRIGGER_LEN = 128
+    MAX_CONTENT_LEN = 8192
 
     def __init__(self, home: Path, builtin_dir: Path | None = None):
         self.user_skills_dir = home / "skills"
@@ -140,8 +146,11 @@ class SkillStore:
                     elif line.startswith("created:"):
                         created = line.split(":", 1)[1].strip()
 
+        # 判定来源：位于 user_skills_dir 内则为 user 生成（可信度低于 builtin）
+        source = "user" if str(skill_dir).startswith(str(self.user_skills_dir)) else "builtin"
+
         return Skill(name=name, trigger=trigger, content=content,
-                     created=created, file_path=skill_file)
+                     created=created, file_path=skill_file, source=source)
 
     def load_all(self) -> list[Skill]:
         """加载所有技能。"""
@@ -169,7 +178,26 @@ class SkillStore:
         return relevant
 
     def create_skill(self, name: str, content: str, trigger: str) -> Path:
-        """创建新技能。"""
+        """创建新技能。
+
+        对 name/trigger/content 做长度和内容校验，防止 LLM 或提示词注入
+        写入超大/异常技能内容（user 技能会被注入 system prompt，是持久化注入面）。
+        """
+        name = (name or "").strip()
+        trigger = (trigger or "").strip()
+        content = content or ""
+        if not name:
+            raise ValueError("技能名不能为空")
+        if len(name) > self.MAX_NAME_LEN:
+            raise ValueError(f"技能名过长（>{self.MAX_NAME_LEN} 字符）")
+        if len(trigger) > self.MAX_TRIGGER_LEN:
+            raise ValueError(f"触发词过长（>{self.MAX_TRIGGER_LEN} 字符）")
+        if not content.strip():
+            raise ValueError("技能内容不能为空")
+        if len(content) > self.MAX_CONTENT_LEN:
+            # 截断而非拒绝，避免 LLM 生成的合法长技能被丢弃
+            content = content[:self.MAX_CONTENT_LEN] + "\n\n...[内容超长，已截断]"
+            logger.warning("技能 content 超过 %d 字符，已截断", self.MAX_CONTENT_LEN)
         safe_name = re.sub(r"[^a-z0-9_-]", "_", name.lower())
         skill_dir = self.user_skills_dir / safe_name
         skill_dir.mkdir(parents=True, exist_ok=True)

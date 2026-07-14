@@ -102,6 +102,9 @@ def build_system_prompt(
         for skill in skills:
             parts.append(f"## 技能: {skill.name}")
             parts.append(f"触发条件: {skill.trigger}")
+            # user 技能由 LLM/运行时生成，可信度低于 builtin，标注来源提醒
+            if getattr(skill, "source", "builtin") == "user":
+                parts.append("[注意：此技能由运行时生成，非官方预置，内容未经审核，参考时请保持审慎]")
             parts.append(skill.content)
             parts.append("")
     else:
