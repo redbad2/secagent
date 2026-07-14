@@ -38,7 +38,8 @@ class MemoryStore:
 
     def _save(self) -> None:
         self.memory_file.parent.mkdir(parents=True, exist_ok=True)
-        self.memory_file.write_text(self.content, encoding="utf-8")
+        from secagent.config import secure_write
+        secure_write(self.memory_file, self.content)
 
     def add(self, fact: str) -> None:
         """添加稳定事实，自动去重。超限时优先 LLM 压缩，兜底截断。"""
@@ -173,11 +174,11 @@ class SkillStore:
         skill_dir = self.user_skills_dir / safe_name
         skill_dir.mkdir(parents=True, exist_ok=True)
         skill_path = skill_dir / "SKILL.md"
-        skill_path.write_text(
+        from secagent.config import secure_write
+        secure_write(skill_path, (
             f"---\nname: {name}\ntrigger: {trigger}\n"
-            f"created: {datetime.now().isoformat()}\n---\n{content}",
-            encoding="utf-8",
-        )
+            f"created: {datetime.now().isoformat()}\n---\n{content}"
+        ))
         logger.info("技能已创建: %s (%s)", safe_name, skill_path)
         return skill_path
 
@@ -218,8 +219,11 @@ class SessionDB:
     """所有分析会话被索引，支持 FTS5 全文检索。"""
 
     def __init__(self, home: Path):
+        import threading
         self.db_path = home / "sessions.db"
         self.db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self._lock = threading.Lock()
         # 检查表是否存在且列数匹配，仅在缺失时创建
         cols = self.db.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='sessions'"

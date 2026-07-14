@@ -12,6 +12,23 @@ import yaml
 
 SECAGENT_HOME = Path(os.environ.get("SECAGENT_HOME", str(Path.home() / ".secagent")))
 
+
+def secure_write(path: Path, data: str, encoding: str = "utf-8") -> None:
+    """安全写入文件：O_CREAT|O_WRONLY|O_TRUNC，权限 0o600。"""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(data)
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def secure_mkdir(path: Path, mode: int = 0o700) -> None:
+    """创建目录并设置安全权限。"""
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(str(path), mode)
+
 # 按目标类型分组的核心 MCP server
 # 域名分析需要的 server
 DOMAIN_SERVERS = {
@@ -179,7 +196,7 @@ def _build_mcp_servers(
 def load_config(config_path: Path | None = None) -> AgentConfig:
     """加载配置，优先级：环境变量 > .env > config.yaml > 默认值。"""
     home = SECAGENT_HOME
-    home.mkdir(parents=True, exist_ok=True)
+    secure_mkdir(home)
 
     # 1. 加载 .env
     env_defaults: dict[str, str] = {}

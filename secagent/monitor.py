@@ -19,6 +19,8 @@ class MonitorDB:
     def __init__(self, home: Path):
         self.db_path = home / "monitor.db"
         self.db = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        import threading; self._lock = threading.Lock()
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS targets (
                 target TEXT PRIMARY KEY,

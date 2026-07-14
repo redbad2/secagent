@@ -665,7 +665,12 @@ def cmd_config(agent, action: str, args: str):
         # 导出完整配置（含 key），用于复制到新机器
         import yaml as _yaml
         import re as _re
-        output = args.strip() or str(agent.config.secagent_home / "config.export.yaml")
+        output = str(agent.config.secagent_home / (args.strip() or "config.export.yaml"))
+        # 安全检查：禁止路径穿越和绝对路径
+        output_path = Path(output).resolve()
+        if not str(output_path).startswith(str(agent.config.secagent_home.resolve())):
+            console.print("[red]错误: 导出路径必须在 " + str(agent.config.secagent_home) + " 内[/red]\n")
+            return
 
         def _resolve_env(val):
             """将 ${VAR_NAME} 替换为环境变量的实际值。"""
@@ -699,7 +704,8 @@ def cmd_config(agent, action: str, args: str):
                 server["headers"] = {k: _resolve_env(v) for k, v in conf.headers.items()}
             config["mcp_servers"][name] = server
         text = _yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        Path(output).write_text(text, encoding="utf-8")
+        from secagent.config import secure_write
+        secure_write(Path(output), text)
         console.print(f"[green]配置已导出到: {output}[/green]")
         console.print(f"[dim]复制到新机器的 ~/.secagent/config.yaml 即可使用[/dim]\n")
 

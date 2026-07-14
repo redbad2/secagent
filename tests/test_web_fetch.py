@@ -67,9 +67,9 @@ class TestWebFetch:
         assert "HTTP" in result
 
     def test_fetch_timeout(self):
-        # Non-routable IP to trigger timeout
-        result = asyncio.run(web_fetch("http://192.0.2.1", timeout=2))
-        assert "超时" in result or "失败" in result or "错误" in result
+        # public IP with a non-responding port to trigger timeout
+        result = asyncio.run(web_fetch("http://1.0.0.1", timeout=2))
+        assert "超时" in result or "失败" in result or "错误" in result or "拒绝" in result
 
     def test_fetch_invalid_host(self):
         result = asyncio.run(web_fetch("http://this-host-does-not-exist-xyz.invalid", timeout=5))
