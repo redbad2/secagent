@@ -1418,6 +1418,10 @@ def main():
 
     p_status = subparsers.add_parser("status", help="MCP 服务器健康检查")
 
+    p_serve = subparsers.add_parser("serve", help="启动 HTTP API 服务")
+    p_serve.add_argument("--host", default="127.0.0.1", help="监听地址")
+    p_serve.add_argument("--port", type=int, default=8000, help="监听端口")
+
     args = parser.parse_args()
 
     # 日志
@@ -1500,6 +1504,10 @@ def main():
         except Exception as e:
             console.print(f"[red]健康检查失败: {e}[/red]\n")
         agent.close()
+        return
+    elif args.command == "serve":
+        from secagent.server import run_server
+        run_server(host=args.host, port=args.port)
         return
 
     # 交互式模式
