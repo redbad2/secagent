@@ -106,7 +106,7 @@ class TestSecurityAgent:
             content='{"risk_level": "低", "confidence": 0.9}'
         )
         messages = [{"role": "user", "content": "test"}]
-        output, msg = await agent._run_loop(messages, [], "test-model")
+        output, msg, _ = await agent._run_loop(messages, [], "test-model")
         assert "低" in output
         assert len(messages) == 2  # user + assistant
 
@@ -129,7 +129,7 @@ class TestSecurityAgent:
 
         messages = [{"role": "user", "content": "test"}]
         tools = [{"type": "function", "function": {"name": "test_tool"}}]
-        output, msg = await agent._run_loop(messages, tools, "test-model")
+        output, msg, _ = await agent._run_loop(messages, tools, "test-model")
 
         assert output == "final answer"
         assert agent.mcp.call_tool.call_count == 1
@@ -154,7 +154,7 @@ class TestSecurityAgent:
 
         messages = [{"role": "user", "content": "test"}]
         tools = [{"type": "function", "function": {"name": "tool"}}]
-        output, msg = await agent._run_loop(messages, tools, "test-model")
+        output, msg, _ = await agent._run_loop(messages, tools, "test-model")
 
         assert "partial" in output or "未完成" in output
         assert agent.llm.chat.completions.create.call_count == 2
@@ -166,7 +166,7 @@ class TestSecurityAgent:
         agent.llm.chat.completions.create.side_effect = Exception("API error")
 
         messages = [{"role": "user", "content": "test"}]
-        output, msg = await agent._run_loop(messages, [], "test-model")
+        output, msg, _ = await agent._run_loop(messages, [], "test-model")
 
         assert "LLM 调用失败" in output
         assert "API error" in output

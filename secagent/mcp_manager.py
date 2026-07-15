@@ -136,6 +136,46 @@ class MCPManager:
         """连接失败的 server 名称集合。"""
         return set(self._failed_servers)
 
+    async def health_check(self) -> dict[str, dict[str, Any]]:
+        """检查所有已连接 server 的健康状态。
+
+        Returns:
+            {server_name: {status, latency_ms, tools_count}}
+            status: "ok" | "failed"
+        """
+        import time
+        results: dict[str, dict[str, Any]] = {}
+
+        # 已连接的 server
+        for name, session in self._sessions.items():
+            try:
+                t0 = time.monotonic()
+                result = await asyncio.wait_for(session.list_tools(), timeout=10)
+                latency = round((time.monotonic() - t0) * 1000)
+                results[name] = {
+                    "status": "ok",
+                    "latency_ms": latency,
+                    "tools_count": len(result.tools),
+                }
+            except Exception as e:
+                results[name] = {
+                    "status": "failed",
+                    "latency_ms": -1,
+                    "tools_count": 0,
+                    "error": str(e)[:100],
+                }
+
+        # 连接失败的 server
+        for name in self._failed_servers:
+            if name not in results:
+                results[name] = {
+                    "status": "disconnected",
+                    "latency_ms": -1,
+                    "tools_count": 0,
+                }
+
+        return results
+
     @property
     def tools(self) -> list[MCPTool]:
         return list(self._tools_cache)

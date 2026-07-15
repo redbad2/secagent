@@ -122,6 +122,7 @@ SLASH_COMMANDS = {
     "/new": None,
     "/help": None,
     "/version": None,
+    "/status": None,
     "/exit": None,
     "/quit": None,
 }
@@ -141,6 +142,7 @@ SLASH_HELP = {
     "/save": "保存当前分析经验为技能",
     "/help": "显示帮助",
     "/version": "显示版本信息",
+    "/status": "MCP 服务器健康检查",
     "/exit": "退出",
     "/quit": "退出",
 }
@@ -236,6 +238,13 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
 
         if result.recommendation:
             console.print(f"\n[bold]建议:[/bold] {result.recommendation}")
+
+        # token 用量统计
+        if result.token_usage and result.token_usage.get("total_tokens"):
+            u = result.token_usage
+            console.print(f"\n[dim]Token: {u.get('prompt_tokens', 0)} prompt + "
+                          f"{u.get('completion_tokens', 0)} completion = "
+                          f"{u.get('total_tokens', 0)} total[/dim]")
 
         console.print()
         return
@@ -469,6 +478,35 @@ def cmd_version():
         border_style="cyan",
     ))
     console.print()
+
+
+async def _check_status(agent):
+    """异步健康检查。"""
+    if not agent.mcp._connected:
+        console.print("[yellow]MCP 未连接。先执行一次分析以连接。[/yellow]\n")
+        return
+    console.print("[bold cyan]MCP 服务器健康检查[/bold cyan]\n")
+    results = await agent.mcp.health_check()
+    table = Table(title="MCP 服务器状态")
+    table.add_column("Server", style="cyan")
+    table.add_column("状态", style="green")
+    table.add_column("延迟", style="dim")
+    table.add_column("工具数", style="yellow")
+    for name, info in sorted(results.items()):
+        status = info["status"]
+        color = {"ok": "green", "failed": "red", "disconnected": "dim"}.get(status, "white")
+        latency = f"{info['latency_ms']}ms" if info["latency_ms"] >= 0 else "-"
+        table.add_row(name, f"[{color}]{status}[/{color}]", latency, str(info["tools_count"]))
+    console.print(table)
+    console.print()
+
+
+def cmd_status(agent):
+    """MCP 服务器健康检查。"""
+    try:
+        _loop_runner.run(_check_status(agent), timeout=30)
+    except Exception as e:
+        console.print(f"[red]健康检查失败: {e}[/red]\n")
 
 
 def cmd_save_skill(agent, args: str):
@@ -989,7 +1027,7 @@ def cmd_update():
     console.print("\n[dim]重启 secagent 以使用新版本[/dim]\n")
 
 
-def cmd_monitor(agent, action: str, target: str = "", depth: str = "quick"):
+def cmd_monitor(agent, action: str, target: str = "", depth: str = "quick", concurrency: int = 3):
     """定时监控管理。"""
     from secagent.monitor import MonitorDB
     from secagent.result_parser import is_valid_ip, detect_target_type
@@ -1071,26 +1109,31 @@ def cmd_monitor(agent, action: str, target: str = "", depth: str = "quick"):
         console.print(f"[bold cyan]监控扫描[/bold cyan] {len(targets)} 个目标\n")
 
         changes = []
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _scan_one(i, t):
+            async with semaphore:
+                console.print(f"[dim]({i}/{len(targets)}) 分析 {t}...[/dim]")
+                try:
+                    result = await agent.analyze(t, depth=depth, interactive=False, batch=True)
+                    changed = db.save_snapshot(
+                        t, result.risk_level,
+                        result.summary or "",
+                        result.findings or [],
+                    )
+                    if changed:
+                        changes.append((t, result.risk_level, result.summary))
+                        console.print(f"  [yellow]变化检测: {t} -> {result.risk_level}[/yellow]")
+                    else:
+                        console.print(f"  [green]无变化: {t} ({result.risk_level})[/green]")
+                except Exception as e:
+                    console.print(f"  [red]错误: {t}: {e}[/red]")
 
         async def _run_monitor():
             try:
                 await agent.connect()
-                for i, t in enumerate(targets, 1):
-                    console.print(f"[dim]({i}/{len(targets)}) 分析 {t}...[/dim]")
-                    try:
-                        result = await agent.analyze(t, depth=depth, interactive=False)
-                        changed = db.save_snapshot(
-                            t, result.risk_level,
-                            result.summary or "",
-                            result.findings or [],
-                        )
-                        if changed:
-                            changes.append((t, result.risk_level, result.summary))
-                            console.print(f"  [yellow]变化检测: {t} -> {result.risk_level}[/yellow]")
-                        else:
-                            console.print(f"  [green]无变化: {t} ({result.risk_level})[/green]")
-                    except Exception as e:
-                        console.print(f"  [red]错误: {t}: {e}[/red]")
+                tasks = [_scan_one(i, t) for i, t in enumerate(targets, 1)]
+                await asyncio.gather(*tasks)
             finally:
                 await agent.disconnect()
 
@@ -1140,6 +1183,8 @@ def parse_and_execute(agent, input_str: str, interactive_mode: bool = False) -> 
         cmd_help()
     elif cmd == "/version":
         cmd_version()
+    elif cmd == "/status":
+        cmd_status(agent)
     elif cmd == "/save":
         cmd_save_skill(agent, rest)
     elif cmd == "/analyze":
@@ -1362,6 +1407,7 @@ def main():
                            default="list", nargs="?")
     p_monitor.add_argument("target", nargs="?", help="目标域名/IP (add/remove/history)")
     p_monitor.add_argument("--depth", choices=["quick", "standard"], default="quick")
+    p_monitor.add_argument("--concurrency", type=int, default=3, help="并发数（仅 run）")
 
     p_compare = subparsers.add_parser("compare", help="策略 A/B 对比")
     p_compare.add_argument("target", help="目标域名/IP")
@@ -1369,6 +1415,8 @@ def main():
                            help="对比的深度，逗号分隔 (如 quick,standard,deep)")
 
     p_update = subparsers.add_parser("update", help="升级 secagent")
+
+    p_status = subparsers.add_parser("status", help="MCP 服务器健康检查")
 
     args = parser.parse_args()
 
@@ -1428,7 +1476,7 @@ def main():
         agent.close()
         return
     elif args.command == "monitor":
-        cmd_monitor(agent, args.action, args.target or "", args.depth)
+        cmd_monitor(agent, args.action, args.target or "", args.depth, args.concurrency)
         agent.close()
         return
     elif args.command == "compare":
@@ -1438,6 +1486,20 @@ def main():
         return
     elif args.command == "update":
         cmd_update()
+        return
+    elif args.command == "status":
+        # status 子命令：需要先连接才能检查
+        async def _status_connect():
+            await agent.connect()
+            await _check_status(agent)
+            await agent.disconnect()
+        try:
+            asyncio.run(asyncio.wait_for(_status_connect(), timeout=60))
+        except asyncio.TimeoutError:
+            console.print("[red]健康检查超时[/red]\n")
+        except Exception as e:
+            console.print(f"[red]健康检查失败: {e}[/red]\n")
+        agent.close()
         return
 
     # 交互式模式

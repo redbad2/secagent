@@ -29,6 +29,7 @@ class AnalysisResult:
     independent_score: float = 0.0      # 独立评分（0-1）
     independent_confidence: float = 0.0  # 独立置信度
     risk_discrepancy: str = ""          # 分歧描述
+    token_usage: dict = field(default_factory=dict)  # LLM token 用量
 
     def __post_init__(self):
         if not self.timestamp:
@@ -52,7 +53,34 @@ class AnalysisResult:
             "independent_score": self.independent_score,
             "independent_confidence": self.independent_confidence,
             "risk_discrepancy": self.risk_discrepancy,
+            "token_usage": self.token_usage,
         }
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> "AnalysisResult":
+        """从 dict 反序列化为 AnalysisResult（to_dict 的逆操作）。
+
+        缺失的字段用默认值，兼容旧版 dict（无独立评分字段时回退默认）。
+        """
+        return AnalysisResult(
+            target=data.get("target", ""),
+            target_type=data.get("target_type", ""),
+            risk_level=data.get("risk_level", "未知"),
+            confidence=data.get("confidence", 0.0),
+            findings=data.get("findings", []),
+            iocs=data.get("iocs", []),
+            tools_used=data.get("tools_used", []),
+            evidence_chain=data.get("evidence_chain", []),
+            summary=data.get("summary", ""),
+            recommendation=data.get("recommendation", ""),
+            raw_output=data.get("raw_output", ""),
+            timestamp=data.get("timestamp", ""),
+            independent_risk_level=data.get("independent_risk_level", ""),
+            independent_score=data.get("independent_score", 0.0),
+            independent_confidence=data.get("independent_confidence", 0.0),
+            risk_discrepancy=data.get("risk_discrepancy", ""),
+            token_usage=data.get("token_usage", {}),
+        )
 
     def to_markdown(self) -> str:
         """生成 Markdown 格式分析报告。"""

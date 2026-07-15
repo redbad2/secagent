@@ -244,7 +244,7 @@ class SecurityAgent:
         ]
 
         tools_used: list[str] = []
-        final_output, msg = await self._run_loop(
+        final_output, msg, token_usage = await self._run_loop(
             messages, tool_defs, selected_model, on_tool_call,
             on_thinking=on_thinking,
             on_stream=on_stream,
@@ -261,6 +261,7 @@ class SecurityAgent:
             llm_client=self.llm,
             llm_model=self.config.models.fast,
         )
+        result.token_usage = token_usage
 
         # 独立风险评分：从工具返回中提取信号，用 compute_risk_score 交叉验证 LLM 判断
         signals = extract_signals(messages)
@@ -371,7 +372,7 @@ class SecurityAgent:
         )
 
         # 运行循环（复用已有 tool_defs 和 model）
-        final_output, _ = await self._run_loop(
+        final_output, _, _ = await self._run_loop(
             self._session_messages,
             self._session_tool_defs,
             self._session_model,
@@ -453,7 +454,7 @@ class SecurityAgent:
         on_stream: Callable[[str], None] | None = None,
         extra_tools_used: list[str] | None = None,
         max_iterations: int | None = None,
-    ) -> tuple[str, Any]:
+    ) -> tuple[str, Any, dict]:
         """执行 LLM tool-calling 循环。
 
         Args:
@@ -467,7 +468,8 @@ class SecurityAgent:
             max_iterations: 本轮循环的最大迭代数；None 则用 config 默认值
 
         Returns:
-            (final_output, last_message)
+            (final_output, last_message, token_usage)
+            token_usage: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
         """
         from secagent.web_fetch import BUILTIN_TOOLS
 
@@ -476,6 +478,7 @@ class SecurityAgent:
         iteration = 0
         msg = None
         final_output = ""
+        total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         while iteration < max_iterations:
             iteration += 1
@@ -489,6 +492,7 @@ class SecurityAgent:
                     temperature=self.config.llm.temperature,
                     max_tokens=self.config.llm.max_tokens,
                     stream=True,
+                    stream_options={"include_usage": True},
                 )
             except Exception as e:
                 # LLM 调用失败：重试一次，然后降级到 fast 模型
@@ -502,6 +506,7 @@ class SecurityAgent:
                         temperature=self.config.llm.temperature,
                         max_tokens=self.config.llm.max_tokens,
                         stream=True,
+                        stream_options={"include_usage": True},
                     )
                     logger.info("降级到模型 %s 成功", fallback_model)
                 except Exception as e2:
@@ -516,6 +521,13 @@ class SecurityAgent:
             reasoning_buf = ""
 
             for chunk in response:
+                # 流式 usage：最后一个 chunk（choices 为空）携带 usage
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage:
+                    total_usage["prompt_tokens"] += getattr(chunk_usage, "prompt_tokens", 0) or 0
+                    total_usage["completion_tokens"] += getattr(chunk_usage, "completion_tokens", 0) or 0
+                    total_usage["total_tokens"] += getattr(chunk_usage, "total_tokens", 0) or 0
+
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
@@ -651,7 +663,7 @@ class SecurityAgent:
             logger.warning("达到最大迭代次数 %d，强制结束", max_iterations)
             final_output = msg.content if msg and msg.content else "分析未完成（达到最大迭代次数）"
 
-        return final_output, msg
+        return final_output, msg, total_usage
 
     async def _call_tool_with_retry(self, tool_name: str, args: dict, max_retries: int = 2) -> Any:
         """调用 MCP 工具，失败时自动重试。"""
