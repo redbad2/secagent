@@ -24,6 +24,11 @@ class AnalysisResult:
     recommendation: str = ""
     raw_output: str = ""       # LLM 完整回复
     timestamp: str = ""
+    # 独立风险评分（compute_risk_score 交叉验证）
+    independent_risk_level: str = ""    # 独立计算的风险等级
+    independent_score: float = 0.0      # 独立评分（0-1）
+    independent_confidence: float = 0.0  # 独立置信度
+    risk_discrepancy: str = ""          # 分歧描述
 
     def __post_init__(self):
         if not self.timestamp:
@@ -41,7 +46,12 @@ class AnalysisResult:
             "evidence_chain": self.evidence_chain,
             "summary": self.summary,
             "recommendation": self.recommendation,
+            "raw_output": self.raw_output,
             "timestamp": self.timestamp,
+            "independent_risk_level": self.independent_risk_level,
+            "independent_score": self.independent_score,
+            "independent_confidence": self.independent_confidence,
+            "risk_discrepancy": self.risk_discrepancy,
         }
 
     def to_markdown(self) -> str:
@@ -296,6 +306,120 @@ AGE_FACTORS: list[tuple[int | float, float]] = [
 ]
 
 RISK_LEVELS = ["低", "中", "高", "严重"]
+
+
+def extract_signals(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """从 MCP 工具返回的文本中提取 compute_risk_score 所需的信号。
+
+    MCP 工具返回经 _extract_content 拍平为纯文本，本函数用正则从中提取：
+    - threat_labels: 威胁标签（CTIA 返回的 tag/classification 字段）
+    - domain_age_days: 域名注册年龄（天数）
+    - has_icp: 是否有 ICP 备案
+    - infra_org: IP 归属组织名
+    - confidence: 标签置信度（CTIA 返回的 confidence 字段）
+
+    提取不到的字段给默认值，不影响后续计算。
+    """
+    # 拼接所有 tool 返回内容
+    tool_texts: list[str] = []
+    for msg in messages:
+        if msg.get("role") == "tool" and msg.get("content"):
+            tool_texts.append(str(msg["content"]))
+    combined = "\n".join(tool_texts)
+    if not combined.strip():
+        return {
+            "threat_labels": [],
+            "domain_age_days": None,
+            "has_icp": False,
+            "infra_org": "",
+            "confidence": 0.0,
+        }
+
+    # 1. 威胁标签：匹配 CTIA 返回中的 tag/label/classification 字段
+    #    常见格式: "tag": "c2"、"tags": ["malware","trojan"]、classification: phishing
+    threat_labels: list[str] = []
+    # CTIA 整体风险分级（非具体标签），应过滤
+    _risk_classes = {"unknown", "white", "clean", "none", "black", "grey", "gray",
+                     "malicious", "suspicious_low", "suspicious_high"}
+    # 提取 "tag": "xxx" 或 "tags": ["xxx", "yyy"] 中所有引号内的值
+    for m in re.finditer(r'"tags?"\s*:\s*\[([^\]]+)\]', combined, re.IGNORECASE):
+        # 数组形式：提取每个引号内的值
+        for val_m in re.finditer(r'["\']([^"\']+)["\']', m.group(1)):
+            val = val_m.group(1).strip()
+            if val and val.lower() not in _risk_classes:
+                threat_labels.append(val)
+    # 单值形式: "tag": "xxx"（非数组）
+    for m in re.finditer(r'"tag"\s*:\s*["\']([^"\']+)["\']', combined, re.IGNORECASE):
+        val = m.group(1).strip()
+        if val.lower() not in _risk_classes:
+            threat_labels.append(val)
+    # classification 形式（只取具体威胁类型，过滤整体风险分级）
+    for m in re.finditer(r'classification["\']?\s*[:=]\s*["\']([^"\']+)', combined, re.IGNORECASE):
+        val = m.group(1).strip()
+        if val.lower() not in _risk_classes:
+            threat_labels.append(val)
+    # 去重，保留顺序
+    seen = set()
+    threat_labels = [t for t in threat_labels if not (t.lower() in seen or seen.add(t.lower()))]
+
+    # 2. 域名年龄：匹配 WHOIS 注册时间
+    #    常见格式: creation_date: 2024-01-15、"注册时间": "2024-01-15"、created: 2024-01-15
+    domain_age_days = None
+    date_patterns = [
+        r'(?:creation_date|created|registration_date|注册时间|创建时间)["\']?\s*[:=]\s*["\']?(\d{4}[-/]\d{2}[-/]\d{2})',
+        r'"created"\s*:\s*"(\d{4}-\d{2}-\d{2})',
+    ]
+    for pat in date_patterns:
+        m = re.search(pat, combined, re.IGNORECASE)
+        if m:
+            try:
+                date_str = m.group(1).replace("/", "-")
+                reg_date = datetime.strptime(date_str, "%Y-%m-%d")
+                domain_age_days = max((datetime.now() - reg_date).days, 0)
+                break
+            except (ValueError, TypeError):
+                pass
+
+    # 3. ICP 备案：匹配备案号模式
+    #    常见格式: 京ICP备12345号、沪ICP备xxxxx号、ICP备xxxxx
+    has_icp = bool(re.search(r'[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼宁]?ICP备\d+', combined))
+
+    # 4. 基础设施组织：匹配 IP 归属/ASN 组织名
+    #    常见格式: org: Cloudflare、asn_org: Amazon、organization: Psychz
+    infra_org = ""
+    org_patterns = [
+        r'(?:asn_org|organization|org|org_name|carrier|isp)["\']?\s*[:=]\s*["\']([^"\']{2,60})',
+    ]
+    for pat in org_patterns:
+        m = re.search(pat, combined, re.IGNORECASE)
+        if m:
+            infra_org = m.group(1).strip()
+            break
+    # 如果没匹配到组织字段，尝试从文本中找已知基础设施名
+    if not infra_org:
+        for infra_key in INFRA_TRUST:
+            if infra_key.lower() in combined.lower():
+                infra_org = infra_key
+                break
+
+    # 5. 标签置信度：匹配 CTIA 的 confidence 字段
+    confidence = 0.0
+    conf_match = re.search(r'"confidence["\']?\s*[:=]\s*([0-9.]+)', combined, re.IGNORECASE)
+    if conf_match:
+        try:
+            val = float(conf_match.group(1))
+            # CTIA 的 confidence 有的是 0-1，有的是 0-100
+            confidence = val / 100.0 if val > 1.0 else val
+        except (ValueError, TypeError):
+            pass
+
+    return {
+        "threat_labels": threat_labels,
+        "domain_age_days": domain_age_days,
+        "has_icp": has_icp,
+        "infra_org": infra_org,
+        "confidence": confidence,
+    }
 
 
 def compute_risk_score(

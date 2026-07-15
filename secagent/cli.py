@@ -200,6 +200,18 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
         )
         console.print(Panel(header, title="分析结果", border_style="cyan"))
 
+        # 独立风险评分（compute_risk_score 交叉验证）
+        if result.independent_risk_level:
+            ind_color = risk_colors.get(result.independent_risk_level, "white")
+            discrepancy_color = "green" if "一致" in (result.risk_discrepancy or "") else "yellow"
+            ind_line = (
+                f"[bold]独立评分:[/bold] [{ind_color}]{result.independent_risk_level}[/{ind_color}]  "
+                f"[bold]分数:[/bold] {result.independent_score:.2f}  "
+                f"[bold]独立置信度:[/bold] {result.independent_confidence:.0%}  "
+                f"[{discrepancy_color}]{result.risk_discrepancy}[/{discrepancy_color}]"
+            )
+            console.print(Panel(ind_line, title="交叉验证", border_style="dim"))
+
         # 渲染完整分析报告（LLM 原始输出，截掉 JSON 后的自言自语）
         if result.raw_output:
             clean = _strip_post_json_noise(result.raw_output)

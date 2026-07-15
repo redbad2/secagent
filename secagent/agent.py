@@ -17,7 +17,10 @@ from secagent.config import (
 from secagent.learning import MemoryStore, SkillStore, SessionDB, LearningTrigger
 from secagent.mcp_manager import MCPManager
 from secagent.prompt_builder import build_system_prompt
-from secagent.result_parser import AnalysisResult, is_valid_ip, detect_target_type, parse_analysis_result
+from secagent.result_parser import (
+    AnalysisResult, is_valid_ip, detect_target_type, parse_analysis_result,
+    extract_signals, compute_risk_score, RISK_LEVELS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +261,39 @@ class SecurityAgent:
             llm_client=self.llm,
             llm_model=self.config.models.fast,
         )
+
+        # 独立风险评分：从工具返回中提取信号，用 compute_risk_score 交叉验证 LLM 判断
+        signals = extract_signals(messages)
+        ind_score, ind_level = compute_risk_score(
+            threat_labels=signals["threat_labels"],
+            infra_org=signals["infra_org"],
+            domain_age_days=signals["domain_age_days"],
+            has_icp=signals["has_icp"],
+            confidence=signals["confidence"],
+        )
+        result.independent_risk_level = ind_level
+        result.independent_score = ind_score
+
+        # 独立置信度：基于数据源数量 + 信号提取完整度
+        distinct_servers = {t.split("__")[0] for t in tools_used if "__" in t}
+        source_factor = min(len(distinct_servers) / 4.0, 1.0)  # 4 个数据源即满
+        signal_fields = [signals["threat_labels"], signals["infra_org"],
+                         signals["domain_age_days"] is not None, signals["has_icp"]]
+        completeness = sum(1 for f in signal_fields if f) / 4.0
+        result.independent_confidence = round((source_factor + completeness) / 2.0, 2)
+
+        # 分歧标注
+        if ind_level and result.risk_level and result.risk_level != "未知":
+            if ind_level == result.risk_level:
+                result.risk_discrepancy = "一致"
+            else:
+                result.risk_discrepancy = f"分歧: LLM={result.risk_level}, 独立={ind_level}"
+        elif not signals["threat_labels"]:
+            result.risk_discrepancy = "无信号（未提取到威胁标签）"
+
+        logger.info("风险交叉验证: LLM=%s, 独立=%s(%.2f), 置信度=%.2f, %s",
+                     result.risk_level, ind_level, ind_score,
+                     result.independent_confidence, result.risk_discrepancy)
 
         # 保存会话状态（批量模式跳过，避免并发冲突）
         if not batch:
