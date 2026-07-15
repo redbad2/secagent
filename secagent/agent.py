@@ -79,7 +79,7 @@ class SecurityAgent:
         import secagent.web_fetch as _wf
         agent_self = self
 
-        async def _save_skill_wrapper(name: str, content: str, trigger: str) -> str:
+        async def _save_skill_wrapper(name: str, content: str, trigger: str = "") -> str:
             try:
                 path = agent_self.save_user_skill(name, content, trigger)
                 return f"[保存成功] 技能已保存到: {path}"
@@ -577,7 +577,15 @@ class SecurityAgent:
                     extra_args = {}
                     if tool_name == "web_fetch__fetch":
                         extra_args["verify_ssl"] = self.config.web_fetch_verify_ssl
-                    tool_tasks.append(BUILTIN_TOOLS[tool_name](**args, **extra_args))
+                    # 用闭包包裹，捕获参数不匹配等调用期异常（LLM 可能不严格遵守 schema）
+                    async def _safe_builtin(_fn=BUILTIN_TOOLS[tool_name], _args=args, _extra=extra_args):
+                        try:
+                            return await _fn(**_args, **_extra)
+                        except TypeError as e:
+                            return f"[工具调用参数错误] {e}"
+                        except Exception as e:
+                            return f"[工具调用失败] {type(e).__name__}: {e}"
+                    tool_tasks.append(_safe_builtin())
                 else:
                     tool_tasks.append(self._call_tool_with_retry(tool_name, args))
 
