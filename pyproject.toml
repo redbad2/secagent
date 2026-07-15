@@ -1,6 +1,6 @@
 [project]
 name = "secagent"
-version = "0.5.0"
+version = "0.5.1"
 description = "CLI 安全分析 Agent - 域名/IP 安全风险判断"
 requires-python = ">=3.10"
 license = "MIT"

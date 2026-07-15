@@ -1143,6 +1143,19 @@ def cmd_monitor(agent, action: str, target: str = "", depth: str = "quick", conc
             console.print(f"\n[bold red]检测到 {len(changes)} 个变化:[/bold red]")
             for t, risk, summary in changes:
                 console.print(f"  {t}: {risk} - {summary[:60]}")
+
+            # Webhook 告警通知
+            if agent.config.notify_webhooks:
+                from secagent.notify import notify_changes
+                console.print(f"\n[dim]发送告警通知到 {len(agent.config.notify_webhooks)} 个 webhook...[/dim]")
+                results = notify_changes(
+                    changes,
+                    agent.config.notify_webhooks,
+                    agent.config.notify_min_risk,
+                )
+                for r in results:
+                    color = "green" if "成功" in r else "red"
+                    console.print(f"  [{color}]{r}[/{color}]")
         else:
             console.print(f"\n[green]所有目标无变化[/green]")
         console.print()

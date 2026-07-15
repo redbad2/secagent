@@ -156,6 +156,8 @@ class AgentConfig:
     web_fetch_enabled: bool = True  # 内置 web_fetch 工具开关
     web_fetch_verify_ssl: bool = False  # web_fetch 是否验证 SSL 证书
     exa_enabled: bool = True        # Exa 搜索工具开关
+    notify_webhooks: list[str] = field(default_factory=list)  # 告警 webhook URL
+    notify_min_risk: str = ""      # 最低通知风险等级
 
 
 def _load_dotenv(env_path: Path) -> dict[str, str]:
@@ -290,6 +292,11 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
     # 8. Exa 搜索开关
     exa_enabled = yaml_data.get("exa", {}).get("enabled", True)
 
+    # 9. 告警通知配置
+    notify_raw = yaml_data.get("notify", {})
+    notify_webhooks = [w.get("url", "") for w in (notify_raw.get("webhooks") or []) if w.get("url")]
+    notify_min_risk = notify_raw.get("min_risk", "")
+
     return AgentConfig(
         llm=llm,
         models=models,
@@ -300,4 +307,6 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         web_fetch_enabled=web_fetch_enabled,
         web_fetch_verify_ssl=web_fetch_verify_ssl,
         exa_enabled=exa_enabled,
+        notify_webhooks=notify_webhooks,
+        notify_min_risk=notify_min_risk,
     )

@@ -95,3 +95,10 @@ mcp_servers:
   # 其他可选工具
   secagent:
     url: https://mcp.secagent.dev
+
+# === 告警通知（可选）===
+# monitor run 检测到风险变化时，通过 webhook 推送告警
+notify:
+  webhooks:
+    - url: ""             # 填入 webhook URL（如 Slack/钉钉/企业机器人）
+  min_risk: "高"           # 可选：只在风险 >= 该等级时通知（低/中/高/严重）
