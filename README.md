@@ -143,6 +143,7 @@ secagent update                  # 升级 secagent
 /end               - 结束当前会话（触发事后学习）
 /new               - 结束当前会话，开始新分析
 /help              - 帮助
+/version           - 显示版本信息
 /exit              - 退出（不触发事后学习）
 ```
 

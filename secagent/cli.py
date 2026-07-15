@@ -121,6 +121,7 @@ SLASH_COMMANDS = {
     "/end": None,
     "/new": None,
     "/help": None,
+    "/version": None,
     "/exit": None,
     "/quit": None,
 }
@@ -139,6 +140,7 @@ SLASH_HELP = {
     "/new": "结束当前会话，开始新分析",
     "/save": "保存当前分析经验为技能",
     "/help": "显示帮助",
+    "/version": "显示版本信息",
     "/exit": "退出",
     "/quit": "退出",
 }
@@ -440,6 +442,21 @@ def cmd_help():
         table.add_row(cmd, desc)
     console.print(table)
     console.print("\n[dim]也可以直接输入域名或IP进行分析，无需 /analyze 前缀[/dim]\n")
+
+
+def cmd_version():
+    """显示版本信息。"""
+    from secagent import __version__
+    from pathlib import Path
+    pkg_dir = Path(__file__).parent.parent
+    console.print(Panel(
+        f"[bold cyan]secagent[/bold cyan] v{__version__}\n"
+        f"[dim]CLI 安全分析 Agent[/dim]\n"
+        f"[dim]路径: {pkg_dir}[/dim]",
+        title="版本信息",
+        border_style="cyan",
+    ))
+    console.print()
 
 
 def cmd_save_skill(agent, args: str):
@@ -1109,6 +1126,8 @@ def parse_and_execute(agent, input_str: str, interactive_mode: bool = False) -> 
         return True
     elif cmd == "/help":
         cmd_help()
+    elif cmd == "/version":
+        cmd_version()
     elif cmd == "/save":
         cmd_save_skill(agent, rest)
     elif cmd == "/analyze":
@@ -1296,6 +1315,8 @@ def main():
         prog="secagent",
         description="安全分析 Agent - 域名/IP 安全风险判断",
     )
+    from secagent import __version__ as _ver
+    parser.add_argument("--version", action="version", version=f"secagent {_ver}")
     parser.add_argument("--verbose", "-v", action="store_true", help="详细日志")
     subparsers = parser.add_subparsers(dest="command")
 
