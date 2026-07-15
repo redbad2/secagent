@@ -37,15 +37,19 @@ secagent(baidu.com)> /end
 ## 功能特性
 
 - **自主分析循环** - OpenAI SDK tool calling + MCP 工具并行调用
+- **独立风险评分** - compute_risk_score 加权矩阵交叉验证 LLM 判断
 - **多轮追问** - 分析完成后可继续追问，保持 MCP 连接和对话历史
 - **快速拦截** - 高置信度恶意直接输出，避免过度查询
+- **误报抑制** - 自动检测 CDN/WAF 共享 IP，标注潜在误报
 - **自我学习** - 复杂分析自动创建技能，误报模式自动记录
 - **多模型路由** - 按分析深度选择模型
 - **内置 web_fetch** - 直接访问目标页面查看实际内容
 - **Exa 搜索** - 搜索公开安全情报
-- **定时监控** - 添加监控目标，定期扫描检测变化
+- **定时监控** - 添加监控目标，定期扫描检测变化，变化时 webhook 告警
 - **策略对比** - A/B 对比不同分析深度的结果
+- **HTTP API** - FastAPI 服务化，可被 SOAR/SIEM 平台集成
 - **思考过程展示** - 显示 LLM 的中间推理过程
+- **token 用量统计** - 每次分析展示 prompt/completion 消耗
 
 ## 分析深度与策略选择
 
@@ -119,32 +123,47 @@ secagent skills list                      # 查看技能
 secagent memory show                      # 查看记忆
 secagent history list                     # 查看历史
 secagent history show <target>            # 查看完整会话
-secagent config show             # 查看配置
-secagent config export           # 导出配置（用于部署到新机器）
-secagent update                  # 升级 secagent
+secagent config show                      # 查看配置
+secagent config export                    # 导出配置（含 API key，0o600 权限）
+secagent config reload                    # 热重载配置文件
+secagent status                           # MCP 服务器健康检查
+secagent serve [--host HOST] [--port PORT] # 启动 HTTP API 服务
+secagent --version                        # 显示版本
+secagent update                           # 升级 secagent
 ```
 
 ## 交互式命令
 
 ```
-/analyze <target>  - 分析域名/IP/哈希/CVE（默认 standard 深度）
-/batch <file>      - 批量分析
-/compare <target>  - 策略对比
-/models show       - 查看模型路由配置
-/models switch <m> - 临时切换默认模型（仅当前会话生效）
-/skills list       - 技能管理
-/memory show       - 记忆管理
-/history list      - 历史管理
-/history show <t>  - 查看完整会话
-/config show       - 配置管理
-/config export     - 导出配置（含 API key，写入 ~/.secagent/ 内，0o600 权限）
-/monitor list      - 监控管理
-/save <名>:<触发>  - 保存分析经验为技能
-/end               - 结束当前会话（触发事后学习）
-/new               - 结束当前会话，开始新分析
-/help              - 帮助
-/version           - 显示版本信息
-/exit              - 退出（不触发事后学习）
+/analyze <target>    - 分析域名/IP/哈希/CVE（默认 standard 深度）
+/batch <file>        - 批量分析
+/compare <target>    - 策略对比
+/models show         - 查看模型路由配置
+/models switch <m>   - 切换并持久化默认模型
+/skills list         - 列出所有技能（含启用状态和来源）
+/skills show <name>  - 查看技能详情
+/skills enable <name>  - 启用技能
+/skills disable <name> - 禁用技能
+/skills delete <name>  - 删除技能
+/skills test <target>  - 预览某目标会匹配到哪些技能
+/memory show         - 记忆管理
+/history list        - 历史管理
+/history show <t>    - 查看完整会话
+/config show         - 配置管理
+/config export       - 导出配置（0o600 权限）
+/config model <m>    - 切换模型（仅内存）
+/config reload       - 热重载配置文件
+/monitor list        - 监控管理
+/monitor add <t>     - 添加监控目标
+/monitor remove <t>  - 移除监控
+/monitor run         - 执行监控扫描
+/save <名>:<触发>    - 保存分析经验为技能
+/status              - MCP 服务器健康检查
+/end                 - 结束当前会话（触发事后学习）
+/new                 - 结束当前会话，开始新分析
+/help                - 帮助
+/version             - 显示版本信息
+/exit                - 退出（不触发事后学习）
 ```
 
 ## 配置
@@ -225,6 +244,41 @@ secagent monitor remove mycompany.com
 > 0 9 * * * /path/to/secagent monitor run >> /var/log/secagent-monitor.log 2>&1
 > ```
 
+## HTTP API 服务
+
+```bash
+# 启动 API 服务
+secagent serve                      # 默认 127.0.0.1:8000
+secagent serve --host 0.0.0.0 --port 9000
+
+# 访问自动生成的接口文档
+open http://localhost:8000/docs
+```
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/analyze` | POST | 分析单个目标，返回完整结果 JSON |
+| `/batch` | POST | 批量分析（并发） |
+| `/history` | GET | 查询历史会话 |
+| `/monitor/list` | GET | 查看监控目标 |
+| `/monitor/run` | POST | 触发监控扫描 |
+| `/status` | GET | MCP 服务器健康状态 |
+| `/version` | GET | 版本信息 |
+
+## 告警通知
+
+monitor run 检测到风险变化时，通过 webhook 自动推送告警。
+
+```yaml
+# config.yaml
+notify:
+  webhooks:
+    - url: "https://hooks.example.com/alert"
+  min_risk: "高"     # 可选：只在风险 >= 该等级时通知
+```
+
+通知格式：POST JSON `{event, timestamp, changes[], total_changes}`。
+
 ## MCP 工具链
 
 | Server | 能力 |
@@ -295,12 +349,14 @@ secagent/
 │   ├── learning.py       # 自我学习层
 │   ├── mcp_manager.py    # MCP 客户端管理
 │   ├── prompt_builder.py # 系统提示构建
-│   ├── result_parser.py  # 结果解析 + 风险评分
+│   ├── result_parser.py  # 结果解析 + 独立风险评分
 │   ├── web_fetch.py      # 内置页面抓取
 │   ├── monitor.py        # 定时监控
 │   ├── compare.py        # 策略对比
+│   ├── server.py         # HTTP API 服务（FastAPI）
+│   ├── notify.py         # Webhook 告警通知
 │   └── skills/           # 预置技能（8个）
-├── tests/                # 测试套件（77个测试）
+├── tests/                # 测试套件（101个测试）
 ├── config.template.yaml  # 配置模板
 ├── install.sh            # 安装脚本
 ├── pyproject.toml
@@ -310,4 +366,4 @@ secagent/
 ## 依赖
 
 - Python 3.10+
-- openai, mcp, rich, prompt_toolkit, pyyaml, httpx
+- openai, mcp, rich, prompt_toolkit, pyyaml, httpx, fastapi, uvicorn

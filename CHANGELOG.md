@@ -199,3 +199,133 @@
 3. `stream=True` 返回的是迭代器，需要手动拼装 tool_calls delta
 4. 环境变量引用（${VAR}）在导出时需要展开，否则新机器读不到
 5. Python 3.12+ 的 PEP 668 禁止直接 pip install，必须用 venv 或 pipx
+
+---
+
+## 阶段九：产品化打磨（v0.2.4 ~ v0.2.8）
+
+### v0.2.4: JSON 提取增加 LLM 结构化 fallback
+- LLM 输出的 JSON 正则匹配失败时，用 `response_format={"type":"json_object"}` 让 LLM 再次提取
+
+### v0.2.5: /exit 不再触发事后学习提示
+- 用户主动退出时不弹出技能创建确认
+
+### v0.2.6: 截掉 JSON 后的 LLM 自言自语
+- `_strip_post_json_noise()` 截掉 LLM 在 JSON 块后的内心独白，只渲染纯分析报告
+
+### v0.2.7: 新增 /models show|switch 命令
+- 交互模式下查看和临时切换模型
+
+### v0.2.8: 修复会话中 /analyze 跨 task anyio 冲突
+- REPL 中 /analyze 先结束当前会话再执行新分析，避免 anyio cancel scope 冲突
+
+---
+
+## 阶段十：安全加固（v0.2.9 ~ v0.3.2）
+
+### v0.2.9: 安全加固
+- 新增 `secure_write()`：O_CREAT|O_WRONLY|O_TRUNC，权限 0o600
+- 新增 `secure_mkdir()`：目录权限 0o700
+- config export 路径限制（禁止绝对路径和 .. 穿越）
+- web_fetch SSRF 防护：`_is_safe_url()` 检查内网/保留地址
+- SessionDB + MonitorDB 加 WAL 模式和 `threading.Lock`（SQL 注释称已加锁，实际未使用）
+- 凭证文件（MEMORY.md、skills、config.export）全部改用 secure_write
+
+### v0.3.0: P0 功能修复
+- `/compare` 命令加入 REPL dispatch 和 Tab 补全
+- 批量 `--output` CSV 导出实际生效
+- `/save` 提示修正
+- `/models`、`/end`、`/new` 加入补全器
+
+### v0.3.1: 安全复核修复
+- `/compare` dispatch 加 `from secagent.compare import cmd_compare`（修复 NameError 回归）
+- SQLite 锁假修复：`SessionDB`/`MonitorDB` 所有方法接入 `with self._lock`
+- config export 路径检查从 `startswith` 改为 `relative_to`（修复兄弟目录绕过）
+- `secure_write` 异常路径修复（仅在 fdopen 失败时 close，避免 double-close）
+- SSRF 补全地址类型（组播/未指定/CGN 100.64/10）
+- 重定向绕过修复（`follow_redirects=False`，手动跟随并每跳复检）
+- analyze/batch `--output` 改用 secure_write
+
+### v0.3.2: 剩余安全加固
+- `save_skill` 内容防护：Skill.source 区分 builtin/user，content 上限 8192 字符，超长截断
+- 日志凭证脱敏：`redact_secrets()` 覆盖 URL userinfo + 敏感 header
+- `cmd_update` 升级前展示信任源并要求确认
+- 会话中 `/batch`、`/monitor`、`/compare` 统一先结束会话（避免 anyio 冲突）
+
+---
+
+## 阶段十一：depth 实质化（v0.3.3 ~ v0.3.6）
+
+### v0.3.3: depth 实质化 + compare 增强
+- `max_iterations` 随 depth 变化（quick 5 / standard 10 / deep 15）
+- deep 额外连接 OPTIONAL_SERVERS + 加载 `threat-intel-correlation` 技能
+- prompt deep 注入 5 步实质 SOP（关联资产追溯/多源交叉验证/历史对比/父子域名追溯/行为模式分析）
+- compare 显示新增工具集合差异对比
+
+### v0.3.4: 复杂域名超时崩溃修复
+- `_loop_runner.run` 超时按 depth 区分（quick 180s / standard 600s / deep 900s）
+- `asyncio.gather` 正确处理 `CancelledError`（`BaseException` 非 `Exception` 子类）
+- sync 模式补 `asyncio.wait_for` 超时保护
+
+### v0.3.5: save_skill 缺参崩溃修复
+- `_save_skill_wrapper` 的 `trigger` 参数加默认值
+- `_run_loop` 内置工具调用加 `_safe_builtin` 闭包 protect
+
+### v0.3.6: /version 命令
+- 交互式 `/version` + 命令行 `secagent --version`
+
+---
+
+## 阶段十二：分析准确性提升（v0.4.0 ~ v0.4.1）
+
+### v0.4.0: 风险评分交叉验证
+- 新增 `extract_signals()`：从 MCP 工具返回文本中正则提取 threat_labels/domain_age_days/has_icp/infra_org/confidence
+- `compute_risk_score` 死代码被激活，与 LLM 自报等级双轨展示
+- AnalysisResult 新增 independent_risk_level/score/confidence/risk_discrepancy 字段
+- 独立置信度 = 数据源数量 + 信号提取完整度
+- 有分歧时黄色标注
+
+### v0.4.1: 序列化 + monitor 并发 + MCP 健康检查 + token 统计
+- AnalysisResult 新增 `from_dict()` 反序列化，`to_dict()` 补全 raw_output
+- monitor run 从串行改为 `Semaphore(3)+gather` 并发，加 `--concurrency` 参数
+- `MCPManager.health_check()` + `/status` 命令 + `secagent status` 子命令
+- token 用量统计：`stream_options={include_usage}` + chunk.usage 捕获，展示在报告末尾
+
+---
+
+## 阶段十三：服务化与集成（v0.5.0 ~ v0.5.1）
+
+### v0.5.0: API 服务化
+- 新建 `secagent/server.py`，FastAPI 提供 7 个端点
+- `secagent serve [--host] [--port]` 启动，自动生成 /docs
+- 依赖：fastapi>=0.100, uvicorn>=0.20
+
+### v0.5.1: Webhook 告警
+- 新建 `secagent/notify.py`，HTTP POST JSON，超时 10s
+- config.yaml 新增 `notify` 段：`webhooks[].url` + `min_risk` 阈值
+- monitor run 检测到变化时自动推送告警
+
+---
+
+## 阶段十四：误报抑制与体验增强（v0.6.0）
+
+### v0.6.0: 误报抑制 + 技能管理 + 配置热重载
+- CDN/WAF 误报抑制：`extract_signals` 新增 `is_cdn_ip` 检测，产生误报警告
+- 技能管理增强：Skill.enabled + `.disabled` 标记文件 + enable/disable 方法
+- `/skills enable/disable <name>` + `/skills test <target>`（预览技能匹配）
+- `/config reload` 热重载配置文件
+- `/models switch` 改为持久化到 config.yaml
+
+---
+
+## 最终状态（v0.6.0）
+
+| 指标 | 数值 |
+|------|------|
+| 核心源码 | ~5000 行 |
+| 测试 | 101 个 |
+| 技能 | 8 个 |
+| 依赖 | 8 个（openai, mcp, rich, prompt_toolkit, pyyaml, httpx, fastapi, uvicorn） |
+| 支持输入 | 域名、IPv4/IPv6、MD5/SHA1/SHA256、CVE |
+| MCP 工具 | 16 个 server，39+ 个工具 |
+| 新增模块 | server.py（API）、notify.py（告警）、result_parser 独立评分引擎 |
