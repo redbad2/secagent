@@ -88,6 +88,9 @@ SLASH_COMMANDS = {
         "list": None,
         "show": None,
         "delete": None,
+        "enable": None,
+        "disable": None,
+        "test": None,
     },
     "/memory": {
         "show": None,
@@ -109,6 +112,7 @@ SLASH_COMMANDS = {
         "show": None,
         "export": None,
         "model": None,
+        "reload": None,
     },
     "/monitor": {
         "list": None,
@@ -131,10 +135,10 @@ SLASH_HELP = {
     "/analyze": "分析域名或IP: /analyze example.com 或 /analyze 1.2.3.4",
     "/batch": "批量分析: /batch targets.txt",
     "/compare": "策略对比: /compare example.com",
-    "/skills": "技能管理: /skills list | /skills show <name> | /skills delete <name>",
+    "/skills": "技能管理: list | show <name> | enable <name> | disable <name> | delete <name> | test <target>",
     "/memory": "记忆管理: /memory show | /memory add <fact> | /memory search <kw> | /memory clear",
     "/history": "历史: /history list | /history show <目标名|#序号> | /history search <keyword> | /history clear",
-    "/config": "配置: /config show | /config export [文件]",
+    "/config": "配置: show | export [文件] | model <name> | reload",
     "/models": "模型管理: /models show | /models switch <model>",
     "/monitor": "监控: /monitor list | /monitor add <target> | /monitor remove <target> | /monitor run | /monitor history <target>",
     "/end": "结束当前分析会话（在追问模式下）",
@@ -213,6 +217,13 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
                 f"[{discrepancy_color}]{result.risk_discrepancy}[/{discrepancy_color}]"
             )
             console.print(Panel(ind_line, title="交叉验证", border_style="dim"))
+
+        # CDN/WAF 误报警告
+        if result.false_positive_warning:
+            console.print(Panel(
+                f"[yellow]{result.false_positive_warning}[/yellow]",
+                title="⚠ 误报提醒", border_style="yellow",
+            ))
 
         # 渲染完整分析报告（LLM 原始输出，截掉 JSON 后的自言自语）
         if result.raw_output:
@@ -544,9 +555,14 @@ def cmd_skills(agent, action: str, args: str):
         table = Table(title="已注册技能")
         table.add_column("名称", style="cyan")
         table.add_column("触发", style="yellow")
+        table.add_column("来源", style="dim")
+        table.add_column("状态", style="green")
         table.add_column("创建时间", style="dim")
         for s in skills:
-            table.add_row(s.name, s.trigger, s.created[:10] if s.created else "")
+            source = s.source or "builtin"
+            status = "[green]启用[/green]" if s.enabled else "[dim]禁用[/dim]"
+            table.add_row(s.name, s.trigger, source, status,
+                          s.created[:10] if s.created else "")
         console.print(table)
         console.print()
 
@@ -557,7 +573,9 @@ def cmd_skills(agent, action: str, args: str):
             return
         for s in skills:
             if s.name == name or s.file_path and s.file_path.parent.name == name:
-                console.print(Markdown(f"---\nname: {s.name}\ntrigger: {s.trigger}\n---\n{s.content}"))
+                status = "启用" if s.enabled else "禁用"
+                console.print(Markdown(f"---\nname: {s.name}\ntrigger: {s.trigger}\n"
+                                       f"status: {status}\nsource: {s.source}\n---\n{s.content}"))
                 console.print()
                 return
         console.print(f"[red]技能不存在: {name}[/red]\n")
@@ -571,6 +589,46 @@ def cmd_skills(agent, action: str, args: str):
             console.print(f"[green]已删除技能: {name}[/green]\n")
         else:
             console.print(f"[red]技能不存在: {name}[/red]\n")
+
+    elif action == "enable":
+        name = args.strip()
+        if not name:
+            console.print("[red]用法: /skills enable <name>[/red]")
+            return
+        if agent.skills.enable_skill(name):
+            console.print(f"[green]已启用技能: {name}[/green]\n")
+        else:
+            console.print(f"[red]未找到可启用的技能: {name}[/red]\n")
+
+    elif action == "disable":
+        name = args.strip()
+        if not name:
+            console.print("[red]用法: /skills disable <name>[/red]")
+            return
+        if agent.skills.disable_skill(name):
+            console.print(f"[yellow]已禁用技能: {name}[/yellow]\n")
+        else:
+            console.print(f"[red]技能不存在: {name}[/red]\n")
+
+    elif action == "test":
+        target = args.strip()
+        if not target:
+            console.print("[red]用法: /skills test <目标域名或IP>[/red]")
+            return
+        target_type = detect_target_type(target)
+        matched = agent.skills.find_relevant(target_type, target)
+        if matched:
+            table = Table(title=f"输入 '{target}' (类型: {target_type}) 匹配的技能")
+            table.add_column("名称", style="cyan")
+            table.add_column("触发", style="yellow")
+            table.add_column("状态", style="green")
+            for s in matched:
+                status = "[green]启用[/green]" if s.enabled else "[dim]禁用[/dim]"
+                table.add_row(s.name, s.trigger, status)
+            console.print(table)
+            console.print()
+        else:
+            console.print(f"[dim]未匹配到技能[/dim]\n")
 
 
 def cmd_memory(agent, action: str, args: str):
@@ -720,6 +778,26 @@ def cmd_history(agent, action: str, args: str):
 
 
 
+def _save_model_to_yaml(home: Path, model: str):
+    """将 model 持久化到 config.yaml。读-改-写，只改动 llm.model 字段。"""
+    import yaml as _yaml
+    config_path = home / "config.yaml"
+    if not config_path.exists():
+        return
+    text = config_path.read_text(encoding="utf-8")
+    # 用 regex 替换 llm.model 行，保持格式不变
+    new_text = re.sub(
+        r'(llm:\s*.*?\n\s*model:\s*)[^\n]+',
+        rf'\g<1>{model}',
+        text,
+        flags=re.DOTALL,
+        count=1,
+    )
+    if new_text != text:
+        from secagent.config import secure_write
+        secure_write(config_path, new_text)
+
+
 def cmd_models(agent, action: str, args: str):
     """模型管理：查看和切换模型。"""
     config = agent.config
@@ -742,9 +820,11 @@ def cmd_models(agent, action: str, args: str):
         if not args:
             console.print("[red]用法: /models switch <model_name>[/red]\n")
             return
-        config.llm.model = args.strip()
-        console.print(f"[green]已切换到模型: {args.strip()}[/green]\n")
-        console.print("[dim]注意: 此更改仅对当前会话生效，重启后恢复默认[/dim]\n")
+        new_model = args.strip()
+        config.llm.model = new_model
+        # 持久化到 config.yaml
+        _save_model_to_yaml(config.secagent_home, new_model)
+        console.print(f"[green]已切换模型并持久化: {new_model}[/green]\n")
 
     else:
         console.print(f"[red]未知操作: {action}[/red]\n")
@@ -760,6 +840,8 @@ def cmd_config(agent, action: str, args: str):
         table.add_row("max_iterations", str(agent.config.max_iterations))
         table.add_row("secagent_home", str(agent.config.secagent_home))
         table.add_row("mcp_servers", ", ".join(agent.config.mcp_servers.keys()))
+        table.add_row("notify_webhooks", f"{len(agent.config.notify_webhooks)} 个" if agent.config.notify_webhooks else "[dim]未配置[/dim]")
+        table.add_row("notify_min_risk", agent.config.notify_min_risk or "[dim]所有变化[/dim]")
         console.print(table)
         console.print()
 
@@ -827,6 +909,29 @@ def cmd_config(agent, action: str, args: str):
             console.print(f"[green]模型已切换: {model}[/green]\n")
         else:
             console.print(f"当前模型: {agent.config.llm.model}\n")
+
+    elif action == "reload":
+        console.print("[dim]重新加载配置...[/dim]")
+        new_config = load_config()
+        # 更新内存中的配置（LLM + models + notify；MCP server 改需重连）
+        agent.config.llm = new_config.llm
+        agent.config.models = new_config.models
+        agent.config.max_iterations = new_config.max_iterations
+        agent.config.web_fetch_enabled = new_config.web_fetch_enabled
+        agent.config.web_fetch_verify_ssl = new_config.web_fetch_verify_ssl
+        agent.config.exa_enabled = new_config.exa_enabled
+        agent.config.notify_webhooks = new_config.notify_webhooks
+        agent.config.notify_min_risk = new_config.notify_min_risk
+        # max_iterations 保底
+        if agent.config.max_iterations < 15:
+            agent.config.max_iterations = 20
+        console.print(f"[green]配置已重新加载。[/green]")
+        console.print(f"  模型: {agent.config.llm.model}")
+        console.print(f"  max_iterations: {agent.config.max_iterations}")
+        console.print(f"  notify_webhooks: {len(agent.config.notify_webhooks)} 个")
+        if agent.config.mcp_servers != new_config.mcp_servers:
+            console.print("[yellow]警告: MCP server 配置有变更，需重连才能生效（请重启 secagent）[/yellow]")
+        console.print()
 
 
 def cmd_analyze(agent, target: str, fmt: str = "text", depth: str = "standard",

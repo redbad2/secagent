@@ -292,6 +292,14 @@ class SecurityAgent:
         elif not signals["threat_labels"]:
             result.risk_discrepancy = "无信号（未提取到威胁标签）"
 
+        # CDN/WAF 误报抑制：域名解析到 CDN 共享 IP，CTIA 可能因 IP 历史误报
+        if signals.get("is_cdn_ip") and result.risk_level in ("高", "严重"):
+            result.false_positive_warning = (
+                "该域名解析到 CDN/WAF 共享 IP，CTIA 可能因该 IP 历史托管恶意而误报，"
+                "建议结合域名本身行为和页面内容综合判断"
+            )
+            logger.info("误报抑制: 检测到 CDN/WAF 共享 IP，LLM 报 %s 可能误报", result.risk_level)
+
         logger.info("风险交叉验证: LLM=%s, 独立=%s(%.2f), 置信度=%.2f, %s",
                      result.risk_level, ind_level, ind_score,
                      result.independent_confidence, result.risk_discrepancy)

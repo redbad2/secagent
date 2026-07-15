@@ -30,6 +30,7 @@ class AnalysisResult:
     independent_confidence: float = 0.0  # 独立置信度
     risk_discrepancy: str = ""          # 分歧描述
     token_usage: dict = field(default_factory=dict)  # LLM token 用量
+    false_positive_warning: str = ""    # 误报警告（CDN/WAF 共享 IP 等）
 
     def __post_init__(self):
         if not self.timestamp:
@@ -54,6 +55,7 @@ class AnalysisResult:
             "independent_confidence": self.independent_confidence,
             "risk_discrepancy": self.risk_discrepancy,
             "token_usage": self.token_usage,
+            "false_positive_warning": self.false_positive_warning,
         }
 
     @staticmethod
@@ -80,6 +82,7 @@ class AnalysisResult:
             independent_confidence=data.get("independent_confidence", 0.0),
             risk_discrepancy=data.get("risk_discrepancy", ""),
             token_usage=data.get("token_usage", {}),
+            false_positive_warning=data.get("false_positive_warning", ""),
         )
 
     def to_markdown(self) -> str:
@@ -361,6 +364,7 @@ def extract_signals(messages: list[dict[str, Any]]) -> dict[str, Any]:
             "has_icp": False,
             "infra_org": "",
             "confidence": 0.0,
+            "is_cdn_ip": False,
         }
 
     # 1. 威胁标签：匹配 CTIA 返回中的 tag/label/classification 字段
@@ -441,12 +445,22 @@ def extract_signals(messages: list[dict[str, Any]]) -> dict[str, Any]:
         except (ValueError, TypeError):
             pass
 
+    # 6. CDN/WAF 共享 IP 检测（误报抑制信号）
+    #    当域名解析到知名 CDN 的 IP，CTIA 可能因该 IP 历史托管恶意而报黑，
+    #    实际是 CDN 共享 IP 的误报，需标注。
+    _cdn_keywords = {"cloudflare", "akamai", "incapsula", "imperva", "fastly",
+                     "aws_waf", "cloudfront", "azure cdn", "网宿", "wswebcdn",
+                     "tencent cdn", "腾讯云CDN", "aliyun cdn"}
+    combined_lower = combined.lower()
+    is_cdn_ip = any(kw in combined_lower for kw in _cdn_keywords)
+
     return {
         "threat_labels": threat_labels,
         "domain_age_days": domain_age_days,
         "has_icp": has_icp,
         "infra_org": infra_org,
         "confidence": confidence,
+        "is_cdn_ip": is_cdn_ip,
     }
 
 

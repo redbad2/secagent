@@ -99,6 +99,7 @@ class Skill:
     created: str = ""
     file_path: Path = field(default=None, repr=False)  # type: ignore
     source: str = "builtin"  # "builtin"（包内预置）| "user"（运行时生成）
+    enabled: bool = True     # 是否启用（可通过 .disabled 标记文件禁用）
 
 
 class SkillStore:
@@ -148,9 +149,12 @@ class SkillStore:
 
         # 判定来源：位于 user_skills_dir 内则为 user 生成（可信度低于 builtin）
         source = "user" if str(skill_dir).startswith(str(self.user_skills_dir)) else "builtin"
+        # 检测是否被禁用：技能目录下有 .disabled 空标记文件表示禁用
+        enabled = not (skill_dir / ".disabled").exists()
 
         return Skill(name=name, trigger=trigger, content=content,
-                     created=created, file_path=skill_file, source=source)
+                     created=created, file_path=skill_file, source=source,
+                     enabled=enabled)
 
     def load_all(self) -> list[Skill]:
         """加载所有技能。"""
@@ -177,6 +181,8 @@ class SkillStore:
         if depth == "deep":
             ctx += " deep correlation multiple"
         for skill in all_skills:
+            if not skill.enabled:
+                continue  # 被禁用的技能不参与匹配
             trigger = skill.trigger.lower()
             if not trigger:
                 continue
@@ -227,6 +233,27 @@ class SkillStore:
         if skill_dir.exists():
             import shutil
             shutil.rmtree(skill_dir)
+            return True
+        return False
+
+    def disable_skill(self, name: str) -> bool:
+        """禁用技能（创建 .disabled 标记文件）。"""
+        safe_name = re.sub(r"[^a-z0-9_-]", "_", name.lower())
+        skill_dir = self.user_skills_dir / safe_name
+        if not skill_dir.exists():
+            return False
+        (skill_dir / ".disabled").touch()
+        logger.info("技能已禁用: %s", safe_name)
+        return True
+
+    def enable_skill(self, name: str) -> bool:
+        """启用技能（删除 .disabled 标记文件）。"""
+        safe_name = re.sub(r"[^a-z0-9_-]", "_", name.lower())
+        skill_dir = self.user_skills_dir / safe_name
+        marker = skill_dir / ".disabled"
+        if marker.exists():
+            marker.unlink()
+            logger.info("技能已启用: %s", safe_name)
             return True
         return False
 
