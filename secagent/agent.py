@@ -584,7 +584,13 @@ class SecurityAgent:
             results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
             for tc, result in zip(msg.tool_calls, results):
-                if isinstance(result, Exception):
+                # CancelledError 是 BaseException 子类，return_exceptions=True 不会捕获它，
+                # 但若个别情况下漏到这里，也按失败处理而非取消整个分析
+                if isinstance(result, BaseException) and not isinstance(result, Exception):
+                    # CancelledError 等：工具被取消（如 MCP 超时），按失败处理
+                    content = f"工具调用被取消: {type(result).__name__}"
+                    logger.warning("工具 %s 被取消: %s", tc.function.name, result)
+                elif isinstance(result, Exception):
                     content = f"工具调用失败: {type(result).__name__}: {result}"
                     logger.warning("工具 %s 失败: %s", tc.function.name, result)
                 else:

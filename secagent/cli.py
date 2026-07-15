@@ -262,6 +262,14 @@ async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinkin
         await agent.disconnect()
 
 
+# 分析深度对应的整体超时（秒）：复杂域名分析容易超过旧默认 300s
+DEPTH_TIMEOUT = {"quick": 180, "standard": 600, "deep": 900}
+
+
+def depth_timeout(depth: str) -> int:
+    """按分析深度返回整体超时秒数。"""
+    return DEPTH_TIMEOUT.get(depth, 600)
+
 def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=None):
     """同步入口：用单个 asyncio.run 包裹完整生命周期。"""
     def on_tool_call(tool_name, args):
@@ -289,16 +297,23 @@ def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=No
             return False
 
     try:
-        result = asyncio.run(_run_analysis(
-            agent, target, depth, fmt,
-            on_tool_call=on_tool_call,
-            on_thinking=on_thinking,
-            on_stream=on_stream,
-            on_learning=on_learning,
-            interactive=True,
-            confirm_fn=confirm_fn,
+        timeout = depth_timeout(depth)
+        result = asyncio.run(asyncio.wait_for(
+            _run_analysis(
+                agent, target, depth, fmt,
+                on_tool_call=on_tool_call,
+                on_thinking=on_thinking,
+                on_stream=on_stream,
+                on_learning=on_learning,
+                interactive=True,
+                confirm_fn=confirm_fn,
+            ),
+            timeout=timeout,
         ))
         display_result(result, fmt, output_file)
+    except asyncio.TimeoutError:
+        console.print(f"\n[red]分析超时（{timeout}秒）。该目标分析耗时过长，"
+                      f"建议用 --depth quick 减少分析深度，或检查 MCP 服务器响应速度。[/red]\n")
     except Exception as e:
         console.print(f"\n[red]分析失败: {e}[/red]\n")
         logger.exception("分析失败")
@@ -326,12 +341,12 @@ class _AsyncLoopRunner:
             self._loop = None
             self._thread = None
 
-    def run(self, coro, timeout=300):
+    def run(self, coro, timeout=600):
         """在后台循环中运行协程，阻塞等待结果。
 
         Args:
             coro: 协程对象
-            timeout: 最大等待秒数（默认 300 秒）
+            timeout: 最大等待秒数（默认 600 秒）
 
         Returns:
             协程返回值
@@ -346,10 +361,17 @@ class _AsyncLoopRunner:
         try:
             return future.result(timeout=timeout)
         except TimeoutError:
+            # 超时：取消后台协程（future.cancel 触发 CancelledError，但根因是超时）
             future.cancel()
-            raise TimeoutError(f"操作超时（{timeout}秒），可能是 MCP 服务器或 LLM API 响应过慢")
+            raise TimeoutError(
+                f"分析超时（{timeout}秒）。该目标分析耗时过长，"
+                f"建议用 --depth quick 减少分析深度，或检查 MCP 服务器响应速度。"
+            )
         except CancelledError:
-            raise RuntimeError("操作被取消，可能是事件循环已关闭")
+            # 非超时的取消：事件循环可能已关闭或被外部取消
+            raise RuntimeError(
+                "操作被取消。后台事件循环可能已关闭，请重启 secagent 后重试。"
+            )
 
 
 _loop_runner = _AsyncLoopRunner()
@@ -397,8 +419,10 @@ def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_
         return result
 
     try:
-        result = _loop_runner.run(_run())
+        result = _loop_runner.run(_run(), timeout=depth_timeout(depth))
         display_result(result, fmt, output_file)
+    except TimeoutError as e:
+        console.print(f"\n[red]{e}[/red]\n")
     except Exception as e:
         console.print(f"\n[red]分析失败: {e}[/red]\n")
         logger.exception("分析失败")
