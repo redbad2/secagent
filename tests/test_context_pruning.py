@@ -77,6 +77,31 @@ class TestExtractSignalsFromText:
         sig = extract_signals_from_text(text)
         assert sig["confidence"] == 0.85
 
+    def test_demoted_format_parsed(self):
+        """降级保留区的 key=value 摘要格式应能被提取（P1 修复）。"""
+        # org 用 CustomOrg（非 INFRA_TRUST 关键词），纯粹验证补充解析路径
+        text = '[已降级 | 原始 500 字符 | tag=c2,malware | conf=0.90 | age=5d | icp=yes | org=CustomOrg | cdn=yes]'
+        sig = extract_signals_from_text(text)
+        assert set(sig["threat_labels"]) == {"c2", "malware"}
+        assert sig["confidence"] == 0.90
+        assert sig["domain_age_days"] == 5
+        assert sig["has_icp"] is True
+        assert sig["infra_org"] == "CustomOrg"
+        assert sig["is_cdn_ip"] is True
+
+    def test_prune_signal_header_parsed(self):
+        """prune 保留区 [关键信号: tag=c2 | ...] 在 body JSON 残缺时仍可兜底提取。"""
+        text = '[关键信号: tag=c2 | conf=0.95 | 原始 5000 字符→裁剪为 100 字符]\n{truncated json without tags'
+        sig = extract_signals_from_text(text)
+        assert "c2" in sig["threat_labels"]
+        assert sig["confidence"] == 0.95
+
+    def test_plain_text_not_misparsed(self):
+        """普通工具返回（无保留区标记）不应触发 key=value 补充解析。"""
+        text = 'some report with equals sign: query_tag=123 and foo=bar'
+        sig = extract_signals_from_text(text)
+        assert sig["threat_labels"] == []  # 不应误提取 tag=123
+
 
 # ====================================================================
 # extract_signals (合并多条消息，与重构前行为一致)
@@ -295,3 +320,28 @@ class TestSlideWindow:
         # assistant 消息不受影响
         assistant_msgs = [m for m in messages if m["role"] == "assistant"]
         assert all(not m["content"].startswith("[已降级") for m in assistant_msgs)
+
+    def test_demoted_then_extract_signals(self, tmp_home):
+        """降级后对 messages 调 extract_signals 仍能提取早期信号（P1 端到端）。
+
+        早期将被降级的消息含独特 tag=early_c2，最近保留的消息无 tag。
+        若降级格式不可解析，extract_signals 会丢失 early_c2。
+        """
+        agent = self._make_agent(tmp_home)
+        messages = [{"role": "system", "content": "sys"}]
+        for i in range(20):
+            messages.append({"role": "assistant", "content": f"t{i}"})
+            if i < 8:  # 前 8 条将被降级（keep_count=12，降级 20-12=8）
+                messages.append({"role": "tool", "content": f'{{"tag": "early_c2", "confidence": 0.8}} padding {i} ' + "x" * 100})
+            else:  # 最近 12 条保留，无 tag
+                messages.append({"role": "tool", "content": f"no threat info padding {i} " + "x" * 100})
+        agent._maybe_slide_window(messages)
+
+        # 确认早期消息确已降级
+        demoted = [m for m in messages if m["role"] == "tool" and m["content"].startswith("[已降级")]
+        assert len(demoted) == 8
+
+        # 降级后 extract_signals 仍应提取到早期信号
+        sig = extract_signals(messages)
+        assert "early_c2" in sig["threat_labels"]
+        assert sig["confidence"] == 0.8

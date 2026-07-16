@@ -452,6 +452,42 @@ def extract_signals_from_text(text: str) -> dict[str, Any]:
     text_lower = text.lower()
     is_cdn_ip = any(kw in text_lower for kw in _CDN_KEYWORDS)
 
+    # 7. 补充：解析降级/prune 保留区的 key=value 摘要格式
+    #    _maybe_slide_window 降级后 tool 消息变为 "[已降级 | tag=c2,malware | conf=0.90 | age=5d]"，
+    #    prune_tool_output 保留区为 "[关键信号: tag=c2 | ...]"。这些格式上面的 JSON 正则匹配不到，
+    #    此处在 JSON 提取失败时补充解析，保证 compute_risk_score 不因裁剪/降级丢信号。
+    #    仅在文本含保留区标记时生效，避免误匹配普通工具返回。
+    if "[已降级" in text or "[关键信号" in text:
+        if not threat_labels:
+            m = re.search(r'tag=([^|\]]+)', text)
+            if m:
+                for v in m.group(1).strip().split(','):
+                    v = v.strip()
+                    if v and v.lower() not in _RISK_CLASSES:
+                        threat_labels.append(v)
+        if domain_age_days is None:
+            m = re.search(r'age=(\d+)d', text)
+            if m:
+                try:
+                    domain_age_days = int(m.group(1))
+                except ValueError:
+                    pass
+        if not has_icp:
+            has_icp = "icp=yes" in text_lower
+        if not infra_org:
+            m = re.search(r'org=([^|\]]+)', text)
+            if m:
+                infra_org = m.group(1).strip()
+        if confidence == 0.0:
+            m = re.search(r'conf=([0-9.]+)', text)
+            if m:
+                try:
+                    confidence = float(m.group(1))
+                except ValueError:
+                    pass
+        if not is_cdn_ip:
+            is_cdn_ip = "cdn=yes" in text_lower
+
     return {
         "threat_labels": threat_labels,
         "domain_age_days": domain_age_days,

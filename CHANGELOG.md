@@ -329,3 +329,41 @@
 | 支持输入 | 域名、IPv4/IPv6、MD5/SHA1/SHA256、CVE |
 | MCP 工具 | 16 个 server，39+ 个工具 |
 | 新增模块 | server.py（API）、notify.py（告警）、result_parser 独立评分引擎 |
+
+---
+
+## 阶段十五：内部可用度增强（v0.7.0）
+
+### v0.7.0: 连接并行化 + 配置校验 + 结果缓存 + 上下文裁剪
+
+**内部可用度提升**（降低首屏延迟、启动即报错、避免重复烧 token）：
+
+- **MCP 连接并行化**（mcp_manager.py）：改 worker task 模式，每个连接由一个常驻 task 持有完整生命周期（enter→保持→exit），多 worker 并行握手降首屏延迟。关键约束：streamablehttp_client 内部 anyio.create_task_group 要求 `__aenter__`/`__aexit__` 同 task，直接 gather 会跨 task 报错，必须 worker task。`_discover_tools` 也改 gather 并行。
+- **启动期配置校验**（config.py）：新增 `validate_config() -> (errors, warnings)`，LLM api_key/base_url/model 缺失为 error，MCP server 缺凭证（fdp-access/x-authtoken/authorization 等）为 warning。CLI 启动时校验，LLM 依赖命令在 error 时退出，管理命令仍可运行排查。
+- **结果复用缓存**（新增 cache.py）：`ResultCache`（SQLite WAL + Lock，键 target+depth，默认 TTL 1h）。`analyze --reuse` 命中缓存跳过 LLM 与 MCP 调用；`AnalysisResult` 加 `from_cache` 字段。
+
+**上下文膨胀控制**（ecdd8b0，工具返回裁剪 + 历史滑窗）：
+
+- **Layer A 裁剪**（prune_tool_output）：`_extract_content` 按阈值裁剪工具返回，信号保留区 + 结构感知（JSON 数组留前5条/JSON 对象删低价值字段/纯文本头尾保留）。
+- **Layer B 滑窗**（_maybe_slide_window）：tool 消息超阈值时降级早期消息为信号摘要，保留最近几轮完整。
+- **重构 extract_signals**：抽出 `extract_signals_from_text` 纯函数，`extract_signals` 改逐条提取+合并（domain_age 取最小/icp·cdn 任一真/org·conf 取首个）。
+
+**P1 修复（降级信号提取）**：
+- 滑窗降级保留区格式 `tag=c2 | conf=0.90` 与 extract_signals_from_text 的 JSON 正则不匹配，导致降级后 compute_risk_score 丢失早期信号。
+- 修复：extract_signals_from_text 增加保留区 `key=value` 格式补充解析（仅在文本含 `[已降级`/`[关键信号` 标记且 JSON 正则未提取到时生效，避免误匹配）。
+- 补测试：降级格式解析、prune 保留区兜底、普通文本不误匹配、降级后端到端 extract_signals 仍可提取。
+
+**P2 修复**：6 个文件末尾补回换行符（agent.py 等原本有，属回归）。
+
+---
+
+## 最终状态（v0.7.0）
+
+| 指标 | 数值 |
+|------|------|
+| 核心源码 | ~5500 行 |
+| 测试 | 149 个（+cache 8/validate 7/reuse 1/context_pruning 26+4） |
+| 技能 | 8 个 |
+| 依赖 | 8 个 |
+| 新增模块 | cache.py（结果缓存） |
+| 新增能力 | MCP 并行连接、配置校验、结果复用、上下文裁剪+滑窗 |
