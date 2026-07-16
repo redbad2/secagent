@@ -158,6 +158,10 @@ class AgentConfig:
     exa_enabled: bool = True        # Exa 搜索工具开关
     notify_webhooks: list[str] = field(default_factory=list)  # 告警 webhook URL
     notify_min_risk: str = ""      # 最低通知风险等级
+    # 上下文管理：工具返回裁剪 + 历史滑窗
+    tool_output_limit: int = 1500   # 单条工具返回裁剪阈值（字符）
+    window_rounds: int = 3          # 滑窗保留最近几轮完整
+    window_trigger: int = 12        # tool 消息数超过此值开始降级
 
 
 def _load_dotenv(env_path: Path) -> dict[str, str]:
@@ -297,6 +301,12 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
     notify_webhooks = [w.get("url", "") for w in (notify_raw.get("webhooks") or []) if w.get("url")]
     notify_min_risk = notify_raw.get("min_risk", "")
 
+    # 10. 上下文管理（工具返回裁剪 + 历史滑窗）
+    context_raw = yaml_data.get("context", {})
+    tool_output_limit = context_raw.get("tool_output_limit", 1500)
+    window_rounds = context_raw.get("window_rounds", 3)
+    window_trigger = context_raw.get("window_trigger", 12)
+
     return AgentConfig(
         llm=llm,
         models=models,
@@ -309,6 +319,9 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         exa_enabled=exa_enabled,
         notify_webhooks=notify_webhooks,
         notify_min_risk=notify_min_risk,
+        tool_output_limit=tool_output_limit,
+        window_rounds=window_rounds,
+        window_trigger=window_trigger,
     )
 
 

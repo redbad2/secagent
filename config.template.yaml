@@ -102,3 +102,10 @@ notify:
   webhooks:
     - url: ""             # 填入 webhook URL（如 Slack/钉钉/企业机器人）
   min_risk: "高"           # 可选：只在风险 >= 该等级时通知（低/中/高/严重）
+
+# === 上下文管理（可选）===
+# 控制循环中 messages 的体积，防止上下文窗口溢出
+context:
+  tool_output_limit: 1500   # 单条工具返回裁剪阈值（字符）
+  window_rounds: 3            # 滑窗保留最近几轮完整
+  window_trigger: 12          # tool 消息数超过此值开始降级早期消息

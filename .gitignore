@@ -35,3 +35,6 @@ Thumbs.db
 
 # 本地工作区数据（WorkBuddy 等，不应入库）
 .workbuddy/
+
+# Agent 运行时产物（会话级 outputs/work/assets）
+.agents/

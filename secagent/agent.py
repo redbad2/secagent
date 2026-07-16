@@ -35,7 +35,7 @@ class SecurityAgent:
             base_url=config.llm.base_url,
             api_key=config.llm.api_key,
         )
-        self.mcp = MCPManager(config.mcp_servers)
+        self.mcp = MCPManager(config.mcp_servers, tool_output_limit=config.tool_output_limit)
 
         # LLM 辅助函数：用于记忆压缩和技能提取
         def _llm_chat(system_prompt: str, user_prompt: str) -> str:
@@ -690,6 +690,9 @@ class SecurityAgent:
                     "content": content,
                 })
 
+            # 历史滑窗：tool 消息数超过阈值时，对早期 tool 消息降级为信号保留区
+            self._maybe_slide_window(messages)
+
         else:
             # 达到 max_iterations
             logger.warning("达到最大迭代次数 %d，强制结束", max_iterations)
@@ -710,6 +713,64 @@ class SecurityAgent:
                                    tool_name, attempt + 1, max_retries + 1, e)
                     await asyncio.sleep(1 * (attempt + 1))
         raise last_error
+
+    def _maybe_slide_window(self, messages: list[dict[str, Any]]) -> None:
+        """历史滑窗：tool 消息数超过阈值时，对早期 tool 消息降级为信号保留区。
+
+        保留最近 window_rounds 轮的 tool 消息完整，更早的 tool 消息
+        content 替换为信号保留区（复用 extract_signals_from_text），
+        防止 messages 随轮次线性膨胀。
+
+        只降级 role=tool 的消息，不动 system/assistant 消息。
+        """
+        trigger = self.config.window_trigger
+        keep_rounds = self.config.window_rounds
+
+        # 统计 tool 消息数量
+        tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool"]
+        if len(tool_indices) <= trigger:
+            return  # 未达阈值，不需要降级
+
+        # 计算最近 keep_rounds*2 条 tool 消息的边界索引
+        # （每轮最多调用多个工具，保守取 keep_rounds*4 作为保留窗口）
+        keep_count = keep_rounds * 4
+        if len(tool_indices) <= keep_count:
+            return  # 保留窗口内全部，无需降级
+
+        # 需要降级的 tool 消息索引（较早的）
+        demote_indices = tool_indices[:-keep_count]
+
+        from secagent.result_parser import extract_signals_from_text
+
+        demoted = 0
+        for idx in demote_indices:
+            msg = messages[idx]
+            content = msg.get("content", "")
+            # 跳过已经是降级标记的（避免重复处理）
+            if isinstance(content, str) and content.startswith("[已降级"):
+                continue
+            # 提取信号作为保留区
+            signals = extract_signals_from_text(content)
+            parts = []
+            if signals.get("threat_labels"):
+                parts.append("tag=" + ",".join(signals["threat_labels"]))
+            if signals.get("domain_age_days") is not None:
+                parts.append(f"age={signals['domain_age_days']}d")
+            if signals.get("has_icp"):
+                parts.append("icp=yes")
+            if signals.get("infra_org"):
+                parts.append(f"org={signals['infra_org']}")
+            if signals.get("confidence", 0) > 0:
+                parts.append(f"conf={signals['confidence']:.2f}")
+            if signals.get("is_cdn_ip"):
+                parts.append("cdn=yes")
+            signal_str = " | ".join(parts) if parts else "无信号"
+            orig_len = len(content)
+            msg["content"] = f"[已降级 | 原始 {orig_len} 字符 | {signal_str}]"
+            demoted += 1
+
+        if demoted:
+            logger.info("滑窗降级: %d 条 tool 消息已压缩为信号摘要", demoted)
 
     def _post_analyze_learning(
         self,

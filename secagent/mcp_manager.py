@@ -36,8 +36,9 @@ class MCPManager:
     以满足 anyio task group 的 same-task 约束。
     """
 
-    def __init__(self, servers: dict[str, MCPServerConfig]):
+    def __init__(self, servers: dict[str, MCPServerConfig], tool_output_limit: int = 1500):
         self.servers_config = servers
+        self._tool_output_limit = tool_output_limit
         self._sessions: dict[str, Any] = {}      # name -> ClientSession
         self._transports: dict[str, Any] = {}     # name -> transport ctx
         self._tools_cache: list[MCPTool] = []
@@ -307,7 +308,12 @@ class MCPManager:
         return self._extract_content(result)
 
     def _extract_content(self, result: Any) -> str:
-        """从 MCP CallToolResult 提取文本内容。"""
+        """从 MCP CallToolResult 提取文本内容，并做体积裁剪。
+
+        提取纯文本后调用 prune_tool_output 做信号保留+结构感知裁剪，
+        确保单条返回不超过 tool_output_limit 字符，同时保留
+        compute_risk_score 所需的全部信号（与 extract_signals 对齐）。
+        """
         if hasattr(result, "content"):
             parts = []
             for block in result.content:
@@ -315,8 +321,10 @@ class MCPManager:
                     parts.append(block.text)
                 else:
                     parts.append(str(block))
-            return "\n".join(parts)
-        return str(result)
+            raw = "\n".join(parts)
+        else:
+            raw = str(result)
+        return prune_tool_output(raw, self._tool_output_limit)
 
     async def disconnect_all(self) -> None:
         """关闭所有 MCP 连接。
@@ -347,3 +355,107 @@ class MCPManager:
         self._stop_events.clear()
         self._tools_cache.clear()
         self._connected = False
+
+
+# ====================================================================
+# 工具返回裁剪：信号保留区 + 结构感知裁剪
+# ====================================================================
+
+def _format_signal_summary(signals: dict) -> str:
+    """把提取出的信号格式化为简洁的保留区摘要。"""
+    parts = []
+    if signals.get("threat_labels"):
+        parts.append("tag=" + ",".join(signals["threat_labels"]))
+    if signals.get("domain_age_days") is not None:
+        parts.append(f"age={signals['domain_age_days']}d")
+    if signals.get("has_icp"):
+        parts.append("icp=yes")
+    if signals.get("infra_org"):
+        parts.append(f"org={signals['infra_org']}")
+    if signals.get("confidence", 0) > 0:
+        parts.append(f"conf={signals['confidence']:.2f}")
+    if signals.get("is_cdn_ip"):
+        parts.append("cdn=yes")
+    return " | ".join(parts) if parts else "无信号"
+
+
+def _prune_json_array(text: str, limit: int) -> str:
+    """裁剪 JSON 数组：保留前 5 条 + 统计摘要。"""
+    import json
+    try:
+        data = json.loads(text.strip())
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(data, list) or not data:
+        return ""
+    total = len(data)
+    head = data[:5]
+    summary = f"[共 {total} 条，展示前 {len(head)} 条]"
+    return summary + "\n" + json.dumps(head, ensure_ascii=False, indent=1)[:limit]
+
+
+def prune_tool_output(text: str, limit: int = 1500) -> str:
+    """裁剪工具返回文本：信号保留区 + 结构感知裁剪 + 截断标记。
+
+    保证 compute_risk_score 所需的信号不丢失（复用 extract_signals_from_text），
+    同时把单条返回控制在 limit 字符以内。
+
+    Args:
+        text: MCP 工具返回的原始文本
+        limit: 裁剪阈值（字符）
+
+    Returns:
+        裁剪后文本，格式：[信号保留区] + [截断标记] + [裁剪正文]
+    """
+    if not text or len(text) <= limit:
+        return text
+
+    from secagent.result_parser import extract_signals_from_text
+
+    # 1. 提取信号作为保留区（与 compute_risk_score 对齐）
+    signals = extract_signals_from_text(text)
+    signal_summary = _format_signal_summary(signals)
+
+    # 2. 结构感知裁剪正文
+    body = ""
+    stripped = text.strip()
+    # JSON 数组形态：保留前 5 条 + 统计
+    if stripped.startswith("[") and stripped.endswith("]"):
+        pruned = _prune_json_array(stripped, limit - 500)
+        body = pruned if pruned else text[:limit]
+    # JSON 对象形态：尝试解析后保留关键字段
+    elif stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            import json
+            data = json.loads(stripped)
+            if isinstance(data, dict):
+                # 按字段重要性保留，删除低价值字段
+                _low_value = {"request_id", "api_version", "pagination",
+                              "trace_id", "req_id", "request_time", "elapsed"}
+                kept = {k: v for k, v in data.items() if k.lower() not in _low_value}
+                body = json.dumps(kept, ensure_ascii=False, indent=1)[:limit]
+            else:
+                body = text[:limit]
+        except (json.JSONDecodeError, ValueError):
+            body = text[:limit]
+    else:
+        # 纯文本/不可解析：头尾保留 + 中间省略
+        head_len = min(500, limit // 3)
+        tail_len = min(500, limit // 3)
+        if len(text) > head_len + tail_len:
+            body = (text[:head_len]
+                    + f"\n...(已省略 {len(text) - head_len - tail_len} 字符)...\n"
+                    + text[-tail_len:])
+        else:
+            body = text[:limit]
+
+    # 3. 拼接：信号保留区 + 截断标记 + 裁剪正文
+    truncation_mark = f"[原始 {len(text)} 字符→裁剪为 {len(body)} 字符]"
+    result = f"[关键信号: {signal_summary} | {truncation_mark}]\n{body}"
+
+    # 最终保底：如果拼接后仍超限，再裁剪 body
+    if len(result) > limit + 200:
+        body = body[:limit - len(result) + len(body)]
+        result = f"[关键信号: {signal_summary} | {truncation_mark}]\n{body}"
+
+    return result
