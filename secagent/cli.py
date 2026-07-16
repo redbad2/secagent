@@ -206,6 +206,9 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
         )
         console.print(Panel(header, title="分析结果", border_style="cyan"))
 
+        if getattr(result, "from_cache", False):
+            console.print("[green]⚡ 来自结果缓存（--reuse 命中，已跳过 LLM 调用）[/green]")
+
         # 独立风险评分（compute_risk_score 交叉验证）
         if result.independent_risk_level:
             ind_color = risk_colors.get(result.independent_risk_level, "white")
@@ -278,10 +281,15 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
 # Async runner: single event loop for entire agent lifecycle
 # ====================================================================
 
-async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinking=None, on_stream=None, on_learning=None, interactive=True, confirm_fn=None):
-    """在单个事件循环中完成 connect -> analyze -> disconnect。"""
+async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinking=None, on_stream=None, on_learning=None, interactive=True, confirm_fn=None, reuse=False):
+    """在单个事件循环中完成 connect -> analyze -> disconnect。
+
+    reuse=True 时不主动 connect（交由 analyze 内部按需连接），以便缓存
+    命中时完全跳过 MCP 连接开销。
+    """
     try:
-        await agent.connect()
+        if not reuse:
+            await agent.connect()
         result = await agent.analyze(
             target, depth=depth,
             on_tool_call=on_tool_call,
@@ -290,6 +298,7 @@ async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinkin
             on_learning=on_learning,
             interactive=interactive,
             confirm_fn=confirm_fn,
+            reuse=reuse,
         )
         return result
     finally:
@@ -304,7 +313,7 @@ def depth_timeout(depth: str) -> int:
     """按分析深度返回整体超时秒数。"""
     return DEPTH_TIMEOUT.get(depth, 600)
 
-def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=None):
+def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=None, reuse=False):
     """同步入口：用单个 asyncio.run 包裹完整生命周期。"""
     def on_tool_call(tool_name, args):
         console.print(f"  [dim]-> 调用工具: {tool_name}[/dim]")
@@ -341,6 +350,7 @@ def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=No
                 on_learning=on_learning,
                 interactive=True,
                 confirm_fn=confirm_fn,
+                reuse=reuse,
             ),
             timeout=timeout,
         ))
@@ -411,7 +421,7 @@ class _AsyncLoopRunner:
 _loop_runner = _AsyncLoopRunner()
 
 
-def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_file=None):
+def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_file=None, reuse=False):
     """交互模式入口：连接+分析，不断开连接。会话保持用于追问。
 
     使用后台事件循环，保持 MCP 连接跨多轮追问存活。
@@ -440,7 +450,8 @@ def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_
             return False
 
     async def _run():
-        await agent.connect(target_type=detect_target_type(target))
+        if not reuse:
+            await agent.connect(target_type=detect_target_type(target))
         result = await agent.analyze(
             target, depth=depth,
             on_tool_call=on_tool_call,
@@ -449,6 +460,7 @@ def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_
             on_learning=on_learning,
             interactive=True,
             confirm_fn=confirm_fn,
+            reuse=reuse,
         )
         return result
 
@@ -935,7 +947,7 @@ def cmd_config(agent, action: str, args: str):
 
 
 def cmd_analyze(agent, target: str, fmt: str = "text", depth: str = "standard",
-                output_file=None, interactive_mode: bool = False):
+                output_file=None, interactive_mode: bool = False, reuse: bool = False):
     """分析目标。interactive_mode=True 时不断开连接（用于 REPL 追问）。"""
     target = target.strip()
     if not target:
@@ -946,14 +958,15 @@ def cmd_analyze(agent, target: str, fmt: str = "text", depth: str = "standard",
     target_type = detect_target_type(target)
     type_labels = {"domain": "域名", "ip": "IP", "hash": "样本哈希", "cve": "CVE漏洞"}
     console.print(f"\n[bold cyan]分析目标:[/bold cyan] {target} ({type_labels.get(target_type, target_type)})")
-    console.print(f"[dim]模型: {agent.config.llm.model} | 深度: {depth} | 最大迭代: {agent.config.max_iterations}[/dim]\n")
+    reuse_tag = " | [green]复用缓存[/green]" if reuse else ""
+    console.print(f"[dim]模型: {agent.config.llm.model} | 深度: {depth} | 最大迭代: {agent.config.max_iterations}{reuse_tag}[/dim]\n")
 
     if interactive_mode:
         # 交互模式：连接+分析，不断开（保持会话用于追问）
-        run_analyze_interactive(agent, target, fmt, depth, output_file)
+        run_analyze_interactive(agent, target, fmt, depth, output_file, reuse=reuse)
     else:
         # 子命令模式：完整生命周期 connect->analyze->disconnect
-        run_analyze_sync(agent, target, fmt, depth, output_file)
+        run_analyze_sync(agent, target, fmt, depth, output_file, reuse=reuse)
 
 
 async def _run_batch(agent, targets, concurrency=3):
@@ -1501,6 +1514,8 @@ def main():
     p_analyze.add_argument("--depth", choices=["quick", "standard", "deep"],
                            default="standard")
     p_analyze.add_argument("--output", "-o", help="输出到文件（支持 .json/.md/.txt）")
+    p_analyze.add_argument("--reuse", action="store_true",
+                           help="优先使用结果缓存（命中且未过期时跳过 LLM 调用）")
 
     p_batch = subparsers.add_parser("batch", help="批量分析")
     p_batch.add_argument("file", help="目标列表文件")
@@ -1563,10 +1578,25 @@ def main():
     if config.max_iterations < 15:
         config.max_iterations = 20
 
-    # 验证必要配置
-    if not config.llm.api_key:
-        console.print("[yellow]警告: LLM API key 未设置[/yellow]")
-        console.print("[dim]请在 ~/.secagent/config.yaml 或环境变量中配置[/dim]\n")
+    # 配置校验：errors 为致命问题，warnings 为降级提示
+    from secagent.config import validate_config
+    errors, warnings = validate_config(config)
+    if errors:
+        console.print("[red]配置错误: 致命问题[/red]")
+        for e in errors:
+            console.print(f"  [red]✗ {e}[/red]")
+        # 需要调用 LLM 的命令在配置不全时无法工作，提前友好退出；
+        # config show / status / skills 等管理命令仍可运行以便排查
+        _llm_commands = {"analyze", "batch", "serve", "compare", "monitor"}
+        if args.command in _llm_commands or args.command is None:
+            console.print("[dim]请编辑 ~/.secagent/config.yaml 或设置环境变量后重试[/dim]\n")
+            sys.exit(1)
+        console.print()
+    if warnings:
+        console.print("[yellow]配置提示: 以下能力将缺失（不阻止启动）[/yellow]")
+        for w in warnings:
+            console.print(f"  [yellow]• {w}[/yellow]")
+        console.print()
 
     from secagent.agent import SecurityAgent
     agent = SecurityAgent(config)
@@ -1574,7 +1604,7 @@ def main():
     # 非交互式子命令
     if args.command == "analyze":
         cmd_analyze(agent, args.target, fmt=args.format, depth=args.depth,
-                    output_file=args.output)
+                    output_file=args.output, reuse=getattr(args, "reuse", False))
         agent.close()
         return
     elif args.command == "batch":

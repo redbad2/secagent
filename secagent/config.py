@@ -310,3 +310,83 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         notify_webhooks=notify_webhooks,
         notify_min_risk=notify_min_risk,
     )
+
+
+# ------------------------------------------------------------------
+# 启动期配置校验
+# ------------------------------------------------------------------
+
+# 各类 server 需要的认证 header（小写）
+_SERVER_REQUIRED_CREDS: dict[str, list[str]] = {
+    "fdp": ["fdp-access", "fdp-secret"],   # 奇安信 FDP（非 ctia）
+    "ctia": ["x-authtoken"],               # 奇安信 CTIA
+    "hunter": ["authorization"],           # Hunter
+    "exa": ["x-api-key"],                  # Exa
+}
+
+
+def _missing_credentials(name: str, conf: MCPServerConfig) -> list[str]:
+    """检查 server 是否缺少必要认证凭证，返回缺失的 header 名列表。
+
+    凭证可能来自 config.yaml 的 headers，也可能由 _build_mcp_servers 从
+    环境变量注入；此处统一检查最终 headers 中的值是否非空。
+    """
+    headers = {k.lower(): (v or "") for k, v in conf.headers.items()}
+    url = (conf.url or "").lower()
+    required: list[str] = []
+
+    if "fdp.qianxin.com" in url and "ctia" not in name:
+        for h in _SERVER_REQUIRED_CREDS["fdp"]:
+            if not headers.get(h):
+                required.append(h)
+    if "ctia" in name or "/ctia/" in url:
+        for h in _SERVER_REQUIRED_CREDS["ctia"]:
+            if not headers.get(h):
+                required.append(h)
+    if "hunter" in name:
+        for h in _SERVER_REQUIRED_CREDS["hunter"]:
+            if not headers.get(h):
+                required.append(h)
+    if "exa" in name:
+        for h in _SERVER_REQUIRED_CREDS["exa"]:
+            if not headers.get(h):
+                required.append(h)
+    return required
+
+
+def validate_config(config: AgentConfig) -> tuple[list[str], list[str]]:
+    """校验配置完整性，返回 (errors, warnings)。
+
+    errors:   致命问题（如 LLM api_key 缺失），analyze/batch/serve 将无法正常工作
+    warnings: 降级提示（如某 server 缺凭证），对应能力缺失但不阻止启动
+
+    设计为只读校验、不抛异常，调用方据 (errors, warnings) 自行决定提示方式，
+    以便 config show / --version 等命令仍可在配置不全时运行。
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # LLM 必填项
+    if not config.llm.api_key:
+        errors.append("LLM API key 未设置（llm.api_key 或环境变量 SECAGENT_API_KEY）")
+    if not config.llm.base_url:
+        errors.append("LLM base_url 未设置（llm.base_url 或环境变量 SECAGENT_BASE_URL）")
+    if not config.llm.model:
+        errors.append("LLM model 未设置（llm.model 或环境变量 SECAGENT_MODEL）")
+
+    # MCP server 凭证：缺失则该 server 连接时会失败，对应情报能力缺失
+    if not config.mcp_servers:
+        warnings.append("未配置任何 MCP server，LLM 将仅基于自身知识分析")
+    else:
+        for name, conf in config.mcp_servers.items():
+            if not conf.url and not conf.command:
+                warnings.append(f"MCP server '{name}' 缺少 url/command，将被跳过")
+                continue
+            missing = _missing_credentials(name, conf)
+            if missing:
+                warnings.append(
+                    f"MCP server '{name}' 缺少凭证 [{', '.join(missing)}]，"
+                    f"该 server 将不可用"
+                )
+
+    return errors, warnings

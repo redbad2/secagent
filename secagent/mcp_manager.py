@@ -39,40 +39,112 @@ class MCPManager:
     def __init__(self, servers: dict[str, MCPServerConfig]):
         self.servers_config = servers
         self._sessions: dict[str, Any] = {}      # name -> ClientSession
-        self._transports: dict[str, Any] = {}     # name -> (read, write, extras)
+        self._transports: dict[str, Any] = {}     # name -> transport ctx
         self._tools_cache: list[MCPTool] = []
         self._connected = False
         self._failed_servers: set[str] = set()    # 连接失败的 server 名
+        # worker task 模式：每个连接由一个常驻 task 持有完整生命周期
+        # anyio task group 要求 context manager 在同一 task enter/exit，
+        # 故握手（__aenter__）与断开（__aexit__）必须落在同一 worker task，
+        # 多个 worker 可并行完成握手以降低首屏延迟。
+        self._conn_workers: dict[str, asyncio.Task] = {}
+        self._stop_events: dict[str, asyncio.Event] = {}
 
     async def connect_all(self, server_names: set[str] | None = None) -> None:
-        """连接 MCP server。可指定只连接子集。
+        """连接 MCP server（并行握手）。可指定只连接子集。
+
+        实现说明：每个 server 由一个常驻 worker task 持有连接的完整生命周期
+        （enter context manager → 保持 → exit）。多个 worker 并行完成握手，
+        显著降低多 server 场景的首屏延迟。worker 内的 anyio task group
+        cancel scope 始终绑定在 worker task 自身，满足 same-task 约束。
 
         Args:
             server_names: 只连接这些 server。None = 连接全部。
         """
+        loop = asyncio.get_event_loop()
+        ready_futures: dict[str, asyncio.Future] = {}
+
         for name, conf in self.servers_config.items():
             if server_names is not None and name not in server_names:
                 continue
-            if conf.url and not conf.command:
-                try:
-                    await self._connect_http(name, conf)
-                except Exception as e:
-                    self._failed_servers.add(name)
-                    logger.warning("MCP server %s 连接失败: %s", name, redact_secrets(str(e)))
-            elif conf.command:
-                try:
-                    await self._connect_stdio(name, conf)
-                except Exception as e:
-                    self._failed_servers.add(name)
-                    logger.warning("MCP server %s 连接失败: %s", name, redact_secrets(str(e)))
-            else:
+            if not conf.url and not conf.command:
                 logger.warning("MCP server %s 缺少 url 或 command，跳过", name)
+                continue
+            # 跳过已连接的（避免重复连接）
+            if name in self._sessions or name in self._conn_workers:
+                continue
+            stop_event = asyncio.Event()
+            self._stop_events[name] = stop_event
+            ready_fut = loop.create_future()
+            ready_futures[name] = ready_fut
+            is_http = bool(conf.url and not conf.command)
+            worker = asyncio.create_task(
+                self._connection_worker(name, conf, is_http, ready_fut, stop_event)
+            )
+            self._conn_workers[name] = worker
 
+        # 并行等待所有 worker 完成握手（就绪或失败）
+        if ready_futures:
+            await asyncio.gather(*ready_futures.values(), return_exceptions=True)
+
+        # 并行发现工具
         await self._discover_tools()
         self._connected = True
         logger.info("MCP 连接完成: %d/%d 成功, 发现 %d 个工具",
                      len(self._sessions), len(self.servers_config),
                      len(self._tools_cache))
+
+    async def _connection_worker(
+        self,
+        name: str,
+        conf: MCPServerConfig,
+        is_http: bool,
+        ready_future: asyncio.Future,
+        stop_event: asyncio.Event,
+    ) -> None:
+        """常驻 task：持有一个 MCP 连接的完整生命周期。
+
+        握手阶段调用 _connect_http/_connect_stdio（内部 __aenter__ 启动 anyio
+        task group，scope 绑定到本 worker task）。握手完成后阻塞等待
+        stop_event，由 disconnect_all 触发后在同一 worker task 内 __aexit__，
+        从根本上规避 anyio "cancel scope in different task" 错误。
+        """
+        try:
+            if is_http:
+                await self._connect_http(name, conf)
+            else:
+                await self._connect_stdio(name, conf)
+            if not ready_future.done():
+                ready_future.set_result(True)
+        except Exception as e:
+            self._failed_servers.add(name)
+            logger.warning("MCP server %s 连接失败: %s", name, redact_secrets(str(e)))
+            if not ready_future.done():
+                ready_future.set_exception(e)
+            return  # 握手失败，无 context 需清理，worker 直接退出
+
+        # 保持 context manager 打开，等待 disconnect 信号
+        try:
+            await stop_event.wait()
+        finally:
+            # 在同一 worker task 内 exit（满足 anyio same-task 约束）
+            await self._close_one(name)
+
+    async def _close_one(self, name: str) -> None:
+        """关闭单个连接的 session 与 transport（容忍清理阶段异常）。"""
+        session = self._sessions.pop(name, None)
+        transport = self._transports.pop(name, None)
+        try:
+            if session is not None:
+                await session.__aexit__(None, None, None)
+        except BaseException as e:
+            logger.debug("关闭 session %s 时出错: %s", name, type(e).__name__)
+        try:
+            if transport is not None:
+                await transport.__aexit__(None, None, None)
+        except BaseException as e:
+            # anyio task group 清理期的 CancelledError/RuntimeError 无害
+            logger.debug("关闭 transport %s 时出错(可忽略): %s", name, type(e).__name__)
 
     async def _connect_http(self, name: str, conf: MCPServerConfig) -> None:
         """连接 Streamable HTTP MCP server。"""
@@ -111,21 +183,34 @@ class MCPManager:
         logger.info("MCP server %s 已连接 (stdio)", name)
 
     async def _discover_tools(self) -> None:
-        """从所有已连接 server 发现工具。"""
+        """从所有已连接 server 并行发现工具。
+
+        list_tools 是普通 RPC 调用（不涉及 context manager 生命周期），
+        跨 task 调用 session 安全，故用 gather 并行加速。
+        """
         self._tools_cache = []
-        for name, session in self._sessions.items():
+        items = list(self._sessions.items())  # snapshot，避免遍历期变动
+
+        async def _discover_one(name: str, session: Any) -> list[MCPTool]:
             try:
                 result = await asyncio.wait_for(session.list_tools(), timeout=15)
-                for tool in result.tools:
-                    self._tools_cache.append(MCPTool(
+                return [
+                    MCPTool(
                         server=name,
                         name=tool.name,
                         description=tool.description or "",
                         input_schema=tool.inputSchema or {"type": "object", "properties": {}},
-                    ))
+                    )
+                    for tool in result.tools
+                ]
             except (asyncio.TimeoutError, asyncio.CancelledError, Exception) as e:
                 logger.warning("从 %s 发现工具失败（已跳过）: %s", name, type(e).__name__)
                 self._failed_servers.add(name)
+                return []
+
+        batches = await asyncio.gather(*[_discover_one(n, s) for n, s in items])
+        for tools in batches:
+            self._tools_cache.extend(tools)
 
     @property
     def connected(self) -> bool:
@@ -234,22 +319,31 @@ class MCPManager:
         return str(result)
 
     async def disconnect_all(self) -> None:
-        """关闭所有 MCP 连接（容忍 anyio task group 清理错误）。"""
-        for name, session in list(self._sessions.items()):
-            try:
-                await session.__aexit__(None, None, None)
-            except BaseException as e:
-                logger.debug("关闭 session %s 时出错: %s", name, type(e).__name__)
+        """关闭所有 MCP 连接。
 
-        for name, ctx in list(self._transports.items()):
-            try:
-                await ctx.__aexit__(None, None, None)
-            except BaseException as e:
-                # anyio task group cleanup may raise CancelledError/RuntimeError
-                # this is harmless - the connection is already closed
-                logger.debug("关闭 transport %s 时出错(可忽略): %s", name, type(e).__name__)
+        通过 stop_event 通知每个 worker task 自行 __aexit__（满足 anyio
+        same-task 约束），并等待它们完成清理。对未走 worker 路径的残留
+        连接（如旧代码遗留）做兜底同步关闭。
+        """
+        # 1. 通知所有 worker 退出（worker 自行 __aexit__）
+        for event in self._stop_events.values():
+            event.set()
+        # 2. 等待所有 worker 完成清理
+        if self._conn_workers:
+            await asyncio.gather(*self._conn_workers.values(), return_exceptions=True)
 
-        self._sessions.clear()
-        self._transports.clear()
+        # 3. 兜底：清理 worker 未持有的残留连接（防御性）
+        for name in list(self._sessions.keys()):
+            await self._close_one(name)
+        for name in list(self._transports.keys()):
+            transport = self._transports.pop(name, None)
+            if transport is not None:
+                try:
+                    await transport.__aexit__(None, None, None)
+                except BaseException as e:
+                    logger.debug("关闭残留 transport %s 时出错: %s", name, type(e).__name__)
+
+        self._conn_workers.clear()
+        self._stop_events.clear()
         self._tools_cache.clear()
         self._connected = False

@@ -31,6 +31,7 @@ class AnalysisResult:
     risk_discrepancy: str = ""          # 分歧描述
     token_usage: dict = field(default_factory=dict)  # LLM token 用量
     false_positive_warning: str = ""    # 误报警告（CDN/WAF 共享 IP 等）
+    from_cache: bool = False            # 是否来自结果缓存（--reuse 命中）
 
     def __post_init__(self):
         if not self.timestamp:
@@ -63,6 +64,7 @@ class AnalysisResult:
         """从 dict 反序列化为 AnalysisResult（to_dict 的逆操作）。
 
         缺失的字段用默认值，兼容旧版 dict（无独立评分字段时回退默认）。
+        from_cache 不参与持久化（由调用方在命中时设置）。
         """
         return AnalysisResult(
             target=data.get("target", ""),
@@ -83,6 +85,7 @@ class AnalysisResult:
             risk_discrepancy=data.get("risk_discrepancy", ""),
             token_usage=data.get("token_usage", {}),
             false_positive_warning=data.get("false_positive_warning", ""),
+            from_cache=True,
         )
 
     def to_markdown(self) -> str:

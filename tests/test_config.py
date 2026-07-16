@@ -3,6 +3,7 @@
 from secagent.config import (
     load_config, LLMConfig, ModelRouter, MCPServerConfig, AgentConfig,
     DOMAIN_SERVERS, IP_SERVERS, CRITICAL_SERVERS, OPTIONAL_SERVERS,
+    validate_config,
 )
 
 
@@ -56,3 +57,69 @@ class TestLoadConfig:
         cfg = load_config()
         assert cfg.max_iterations > 0
         assert cfg.timeout > 0
+
+
+class TestValidateConfig:
+    def _cfg(self, **kw):
+        defaults = dict(
+            llm=LLMConfig(base_url="http://x/v1", api_key="k", model="m"),
+            mcp_servers={},
+        )
+        defaults.update(kw)
+        return AgentConfig(**defaults)
+
+    def test_valid_config_no_errors(self):
+        errors, warnings = validate_config(self._cfg())
+        assert errors == []
+        assert warnings == [] or warnings == ["未配置任何 MCP server，LLM 将仅基于自身知识分析"]
+
+    def test_missing_api_key_is_error(self):
+        cfg = self._cfg(llm=LLMConfig(base_url="http://x/v1", api_key="", model="m"))
+        errors, _ = validate_config(cfg)
+        assert any("api_key" in e for e in errors)
+
+    def test_missing_base_url_is_error(self):
+        cfg = self._cfg(llm=LLMConfig(base_url="", api_key="k", model="m"))
+        errors, _ = validate_config(cfg)
+        assert any("base_url" in e for e in errors)
+
+    def test_fdp_missing_creds_is_warning(self):
+        cfg = self._cfg(mcp_servers={
+            "qianxin_fdp_domain": MCPServerConfig(
+                name="qianxin_fdp_domain",
+                url="https://fdp.qianxin.com/mcp/v1/domain/",
+                headers={},
+            ),
+        })
+        errors, warnings = validate_config(cfg)
+        assert errors == []
+        assert any("qianxin_fdp_domain" in w and "fdp-access" in w for w in warnings)
+
+    def test_fdp_with_creds_no_warning(self):
+        cfg = self._cfg(mcp_servers={
+            "qianxin_fdp_domain": MCPServerConfig(
+                name="qianxin_fdp_domain",
+                url="https://fdp.qianxin.com/mcp/v1/domain/",
+                headers={"fdp-access": "a", "fdp-secret": "s"},
+            ),
+        })
+        _, warnings = validate_config(cfg)
+        assert not any("qianxin_fdp_domain" in w for w in warnings)
+
+    def test_ctia_missing_token_is_warning(self):
+        cfg = self._cfg(mcp_servers={
+            "ctia_domain": MCPServerConfig(
+                name="ctia_domain",
+                url="https://fdp.qianxin.com/mcp/v1/ctia/domain/",
+                headers={},
+            ),
+        })
+        _, warnings = validate_config(cfg)
+        assert any("ctia_domain" in w and "x-authtoken" in w.lower() for w in warnings)
+
+    def test_iporg_no_creds_needed(self):
+        cfg = self._cfg(mcp_servers={
+            "iporg": MCPServerConfig(name="iporg", url="https://mcp.iporg.dev", headers={}),
+        })
+        _, warnings = validate_config(cfg)
+        assert not any("iporg" in w for w in warnings)

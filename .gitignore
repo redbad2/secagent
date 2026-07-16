@@ -32,3 +32,6 @@ Thumbs.db
 
 # 旧的根目录 skills（已移入 secagent/skills/）
 /skills/
+
+# 本地工作区数据（WorkBuddy 等，不应入库）
+.workbuddy/

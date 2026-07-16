@@ -21,6 +21,7 @@ from secagent.result_parser import (
     AnalysisResult, is_valid_ip, detect_target_type, parse_analysis_result,
     extract_signals, compute_risk_score, RISK_LEVELS,
 )
+from secagent.cache import ResultCache
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class SecurityAgent:
             builtin_dir=_find_builtin_skills(),
         )
         self.sessions = SessionDB(config.secagent_home)
+        self.cache = ResultCache(config.secagent_home)
         self.learning = LearningTrigger(
             skills=self.skills,
             memory=self.memory,
@@ -156,9 +158,13 @@ class SecurityAgent:
         self._session_active = False
 
     def close(self) -> None:
-        """关闭 sessions DB。在程序退出时调用。"""
+        """关闭持久化资源（sessions DB、缓存 DB）。在程序退出时调用。"""
         try:
             self.sessions.close()
+        except Exception:
+            pass
+        try:
+            self.cache.close()
         except Exception:
             pass
 
@@ -173,6 +179,7 @@ class SecurityAgent:
         interactive: bool = True,
         confirm_fn: Callable[[str], bool] | None = None,
         batch: bool = False,
+        reuse: bool = False,
     ) -> AnalysisResult:
         """分析域名或 IP。
 
@@ -186,7 +193,17 @@ class SecurityAgent:
             interactive: True=交互模式(可提示用户确认), False=批处理模式
             confirm_fn: 确认回调，返回 True 表示用户同意创建技能
             batch: True=批量模式，跳过 session 状态写入（并发安全）
+            reuse: True=优先使用结果缓存，命中且未过期时跳过 LLM 与 MCP 调用
         """
+        # 结果缓存：命中时直接返回，跳过连接与 LLM 循环（省 token、省时间）
+        if reuse and self.cache is not None:
+            cached = self.cache.get(target, depth)
+            if cached is not None:
+                result = AnalysisResult.from_dict(cached)
+                result.from_cache = True
+                logger.info("命中结果缓存: %s (depth=%s)", target, depth)
+                return result
+
         if not self._connected:
             # 先判断目标类型，用于过滤连接的 MCP server
             _target_type = detect_target_type(target)
@@ -342,6 +359,13 @@ class SecurityAgent:
             )
             if learning_actions and on_learning:
                 on_learning(learning_actions)
+
+        # 写入结果缓存（成功的分析结果，供后续 --reuse 命中）
+        if self.cache is not None:
+            try:
+                self.cache.put(target, depth, result.to_dict())
+            except Exception as e:
+                logger.warning("缓存写入失败: %s", e)
 
         return result
 

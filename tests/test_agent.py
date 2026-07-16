@@ -226,3 +226,23 @@ class TestSecurityAgent:
             on_stream=lambda t: stream_chunks.append(t),
         )
         assert "".join(stream_chunks) == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_analyze_reuse_cache_hit_skips_llm(self, agent):
+        """reuse=True 且缓存命中时直接返回缓存结果，不调用 LLM、不连接 MCP。"""
+        agent.cache.put("example.com", "standard", {
+            "target": "example.com",
+            "target_type": "domain",
+            "risk_level": "低",
+            "confidence": 0.9,
+            "summary": "cached result",
+        })
+        agent.llm = MagicMock()  # 若被调用说明缓存未生效
+
+        result = await agent.analyze("example.com", depth="standard", reuse=True)
+
+        assert result.from_cache is True
+        assert result.risk_level == "低"
+        assert result.summary == "cached result"
+        agent.llm.chat.completions.create.assert_not_called()
+        assert agent._connected is False  # 命中缓存不应触发连接
