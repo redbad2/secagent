@@ -109,3 +109,8 @@ context:
   tool_output_limit: 1500   # 单条工具返回裁剪阈值（字符）
   window_rounds: 3            # 滑窗保留最近几轮完整
   window_trigger: 12          # tool 消息数超过此值开始降级早期消息
+
+# === 技能安全（可选）===
+# LLM 通过 save_skill 工具自动创建技能的策略
+skills:
+  llm_create: "quarantine"    # off=禁止 | quarantine=保存但禁用待人工审核（默认） | on=直接启用

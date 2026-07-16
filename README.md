@@ -197,6 +197,10 @@ web_fetch:
 exa:
   enabled: true                  # Exa 搜索工具开关
 
+# === 技能安全 ===
+skills:
+  llm_create: quarantine         # LLM 自动创建技能策略：off=禁止 | quarantine=禁用待审核（默认） | on=直接启用
+
 # === MCP 服务器 ===
 mcp_servers:
   qianxin_fdp_domain:
@@ -292,6 +296,8 @@ notify:
 ## 自我学习
 
 - **技能自动创建** — 复杂分析后提示用户保存为技能
+- **技能创建审核** — LLM 通过 save_skill 创建的技能默认禁用待审核（内容含注入审计），
+  `/skills show` 审查后 `/skills enable` 确认启用；可用 `skills.llm_create` 配置（off/quarantine/on）
 - **记忆自动更新** — 误报模式自动写入 MEMORY.md
 - **会话存档** — 完整对话历史保存到 SQLite
 

@@ -556,6 +556,12 @@ def cmd_save_skill(agent, args: str):
         return
     path = agent.save_user_skill(name, content, trigger)
     console.print(f"[green]技能已保存: {path}[/green]\n")
+    # 手工保存不隔离（用户自己的显式动作），但仍跑内容审计并提示
+    from secagent.learning import audit_skill_content
+    hits = audit_skill_content(content)
+    if hits:
+        console.print(f"[yellow]⚠ 内容审计命中: {', '.join(hits)}。"
+                      f"该技能会注入后续分析的 system prompt，请确认内容无误。[/yellow]\n")
 
 
 def cmd_skills(agent, action: str, args: str):
@@ -606,6 +612,37 @@ def cmd_skills(agent, action: str, args: str):
         name = args.strip()
         if not name:
             console.print("[red]用法: /skills enable <name>[/red]")
+            return
+        # 启用前展示内容预览并要求确认：user 技能会注入后续所有分析的
+        # system prompt（尤其 LLM 自动创建、默认隔离待审核的技能），
+        # 启用动作必须是人工审查后的显式决定
+        skill = next(
+            (s for s in skills
+             if s.name == name or (s.file_path and s.file_path.parent.name == name)),
+            None,
+        )
+        if skill is None:
+            console.print(f"[red]技能不存在: {name}[/red]\n")
+            return
+        if skill.enabled:
+            console.print(f"[dim]技能已处于启用状态: {name}[/dim]\n")
+            return
+        console.print(Panel(
+            skill.content[:600] + ("\n...[截断]" if len(skill.content) > 600 else ""),
+            title=f"待启用技能: {skill.name} (来源: {skill.source})",
+            border_style="yellow",
+        ))
+        from secagent.learning import audit_skill_content
+        hits = audit_skill_content(skill.content)
+        if hits:
+            console.print(f"[red]⚠ 内容审计命中: {', '.join(hits)}，"
+                          f"启用后可能干扰后续分析，请谨慎确认[/red]")
+        try:
+            answer = input("确认启用该技能？(y/n) > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in ("y", "yes"):
+            console.print("[dim]已取消[/dim]\n")
             return
         if agent.skills.enable_skill(name):
             console.print(f"[green]已启用技能: {name}[/green]\n")

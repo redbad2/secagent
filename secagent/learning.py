@@ -102,6 +102,34 @@ class Skill:
     enabled: bool = True     # 是否启用（可通过 .disabled 标记文件禁用）
 
 
+# 技能内容审计：命中以下模式说明内容可能含提示注入。
+# 保持保守，只匹配强注入信号；误报的后果仅是进入人工审核（quarantine），
+# 不会丢失内容，故宁可偏严。
+_SKILL_AUDIT_PATTERNS: list[tuple[str, str]] = [
+    (r"忽略(之前|以上|所有|先前).{0,10}(指令|指示|提示|规则)", "角色覆盖指令"),
+    (r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?)",
+     "角色覆盖指令(英文)"),
+    (r"(^|\n)\s*system\s*[:：]", "伪造 system 指令"),
+    (r"\b(save_skill|web_fetch__fetch)\b", "诱导调用工具"),
+    (r"https?://[^\s)\]]+", "外链 URL"),
+    (r"\b[A-Za-z0-9+/]{80,}={0,2}\b", "疑似 base64 载荷"),
+]
+
+
+def audit_skill_content(content: str) -> list[str]:
+    """审计技能内容是否含提示注入模式，返回命中说明列表（空=通过）。
+
+    user 技能会被注入后续所有分析的 system prompt，是持久化注入面；
+    本函数做静态启发式检查，命中项应进入人工审核而非直接启用。
+    """
+    hits: list[str] = []
+    for pattern, label in _SKILL_AUDIT_PATTERNS:
+        if re.search(pattern, content or "", re.IGNORECASE | re.MULTILINE):
+            if label not in hits:
+                hits.append(label)
+    return hits
+
+
 class SkillStore:
     """可复用的分析方法，从分析经验中提炼。"""
 
@@ -193,11 +221,16 @@ class SkillStore:
                 relevant.append(skill)
         return relevant
 
-    def create_skill(self, name: str, content: str, trigger: str) -> Path:
+    def create_skill(self, name: str, content: str, trigger: str,
+                     quarantine: bool = False) -> Path:
         """创建新技能。
 
         对 name/trigger/content 做长度和内容校验，防止 LLM 或提示词注入
         写入超大/异常技能内容（user 技能会被注入 system prompt，是持久化注入面）。
+
+        Args:
+            quarantine: True 时创建后立即写入 .disabled 标记，技能处于
+                        禁用待审核状态，不参与后续匹配，需人工 enable 后生效。
         """
         name = (name or "").strip()
         trigger = (trigger or "").strip()
@@ -223,7 +256,11 @@ class SkillStore:
             f"---\nname: {name}\ntrigger: {trigger}\n"
             f"created: {datetime.now().isoformat()}\n---\n{content}"
         ))
-        logger.info("技能已创建: %s (%s)", safe_name, skill_path)
+        if quarantine:
+            (skill_dir / ".disabled").touch()
+            logger.info("技能已创建（隔离待审核）: %s (%s)", safe_name, skill_path)
+        else:
+            logger.info("技能已创建: %s (%s)", safe_name, skill_path)
         return skill_path
 
     def delete_skill(self, name: str) -> bool:

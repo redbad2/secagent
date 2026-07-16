@@ -158,6 +158,9 @@ class AgentConfig:
     exa_enabled: bool = True        # Exa 搜索工具开关
     notify_webhooks: list[str] = field(default_factory=list)  # 告警 webhook URL
     notify_min_risk: str = ""      # 最低通知风险等级
+    # LLM 通过 save_skill 工具自动创建技能的策略：
+    # off=禁止 | quarantine=保存但禁用待人工审核（默认） | on=直接启用
+    skills_llm_create: str = "quarantine"
     # 上下文管理：工具返回裁剪 + 历史滑窗
     tool_output_limit: int = 1500   # 单条工具返回裁剪阈值（字符）
     window_rounds: int = 3          # 滑窗保留最近几轮完整
@@ -307,6 +310,11 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
     window_rounds = context_raw.get("window_rounds", 3)
     window_trigger = context_raw.get("window_trigger", 12)
 
+    # 11. LLM 自动创建技能的策略（off/quarantine/on）
+    skills_llm_create = str(yaml_data.get("skills", {}).get("llm_create", "quarantine")).lower()
+    if skills_llm_create not in ("off", "quarantine", "on"):
+        skills_llm_create = "quarantine"
+
     return AgentConfig(
         llm=llm,
         models=models,
@@ -322,6 +330,7 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         tool_output_limit=tool_output_limit,
         window_rounds=window_rounds,
         window_trigger=window_trigger,
+        skills_llm_create=skills_llm_create,
     )
 
 

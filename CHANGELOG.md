@@ -367,3 +367,42 @@
 | 依赖 | 8 个 |
 | 新增模块 | cache.py（结果缓存） |
 | 新增能力 | MCP 并行连接、配置校验、结果复用、上下文裁剪+滑窗 |
+
+---
+
+## 阶段十六：自身安全与循环健壮性（v0.8.0）
+
+### v0.8.0: save_skill 注入防护 + AsyncOpenAI + 迭代上限 salvage
+
+**P0-1 save_skill 提示注入通道审核**：
+
+- 背景：LLM 可经 save_skill 工具把内容写入技能并即时生效，而 user 技能会注入后续所有分析的 system prompt —— 恶意页面可经 web_fetch 上下文诱导 LLM 写入攻击者控制的技能，形成持久化注入。
+- `learning.py`：`create_skill()` 新增 `quarantine` 参数（创建即写 `.disabled` 标记，不参与后续匹配）；新增 `audit_skill_content()` 静态审计（中英文角色覆盖指令、伪造 `system:` 指令、诱导调用工具、外链 URL、疑似 base64 载荷）。
+- `agent.py`：LLM 经 save_skill 创建的技能默认隔离待审核；审计命中时即使配置 `on` 也强制隔离。
+- `cli.py`：`/skills enable` 增加内容预览 + 审计警告 + y/n 确认（原为无确认直接启用）；`/save` 手工保存后跑审计提示。
+- `config.py`：新增 `skills.llm_create`（off=禁止 | quarantine=禁用待审核（默认） | on=直接启用）。
+
+**P0-2 AsyncOpenAI 解除事件循环阻塞**：
+
+- 问题：`_run_loop` 用同步 OpenAI client 做流式调用，整个流式期间阻塞 event loop，`serve` 模式 `/batch`、`/monitor/run` 的 `Semaphore(3)` 并发实际退化为串行。
+- 修复：改用 `AsyncOpenAI` + `async for`；流式读取抽为 `_stream_completion()` 辅助方法。
+- 同步辅助调用（结果解析 fallback、事后学习技能提炼）在 analyze/end_session 的 4 个调用点改 `asyncio.to_thread`，事件循环内零阻塞 LLM 调用。
+
+**P0-3 迭代上限 salvage**：
+
+- 问题：达到 max_iterations 后直接拿最后一条 assistant 内容或输出"分析未完成"，已完成的工具调用结果全部浪费。
+- 修复：新增 `_salvage_final_output()` —— 已收集工具数据时追加"禁止工具调用"指令再发起一次补全（不计入迭代数），强制基于已有信息按既定 JSON 格式输出最终结论；salvage 失败时回退原有兜底。
+
+**测试**：mock 从同步 client 迁移到 `llm_async`（`_async_stream`/`_mock_llm` 辅助），新增 salvage 成功/失败兜底、save_skill 隔离/off/审计强制隔离/干净放行、隔离创建、7 类审计模式共 17 个用例。
+
+---
+
+## 最终状态（v0.8.0）
+
+| 指标 | 数值 |
+|------|------|
+| 核心源码 | ~5800 行 |
+| 测试 | 171 个 |
+| 技能 | 8 个 |
+| 依赖 | 8 个 |
+| 新增能力 | save_skill 隔离审核 + 内容审计、AsyncOpenAI 真并发、迭代上限 salvage |

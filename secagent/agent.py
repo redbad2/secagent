@@ -8,7 +8,7 @@ import logging
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 from secagent.config import (
     AgentConfig, DOMAIN_SERVERS, IP_SERVERS, HASH_SERVERS, CVE_SERVERS,
@@ -32,6 +32,12 @@ class SecurityAgent:
     def __init__(self, config: AgentConfig):
         self.config = config
         self.llm = OpenAI(
+            base_url=config.llm.base_url,
+            api_key=config.llm.api_key,
+        )
+        # 异步客户端：_run_loop 的流式调用走它，避免同步调用阻塞事件循环
+        # （server 并发 /batch、/monitor/run 场景下同步调用会把并发退化为串行）
+        self.llm_async = AsyncOpenAI(
             base_url=config.llm.base_url,
             api_key=config.llm.api_key,
         )
@@ -85,9 +91,24 @@ class SecurityAgent:
         agent_self = self
 
         async def _save_skill_wrapper(name: str, content: str, trigger: str = "") -> str:
+            # LLM 自动创建的技能是持久化提示注入面：默认隔离禁用，人工审核后启用
+            from secagent.learning import audit_skill_content
+            mode = agent_self.config.skills_llm_create
+            if mode == "off":
+                return "[已拒绝] 当前配置禁止 LLM 自动创建技能（skills.llm_create=off）"
             try:
-                path = agent_self.save_user_skill(name, content, trigger)
-                return f"[保存成功] 技能已保存到: {path}"
+                hits = audit_skill_content(content)
+                # 内容审计命中注入模式时，即使配置为 on 也强制隔离
+                quarantine = (mode == "quarantine") or bool(hits)
+                path = agent_self.save_user_skill(name, content, trigger,
+                                                  quarantine=quarantine)
+                msg = f"[保存成功] 技能已保存到: {path}"
+                if quarantine:
+                    msg += "（已保存为禁用待审核状态，需用户 /skills show 审查后 /skills enable 启用）"
+                if hits:
+                    msg += f" [安全提示] 内容审计命中: {', '.join(hits)}"
+                    logger.warning("save_skill 内容审计命中: %s (%s)", ", ".join(hits), name)
+                return msg
             except Exception as e:
                 return f"[保存失败] {e}"
 
@@ -269,8 +290,10 @@ class SecurityAgent:
             max_iterations=effective_max_iter,
         )
 
-        # 解析结果
-        result = parse_analysis_result(
+        # 解析结果（同步函数，fallback 路径会同步调 LLM，
+        # 放 worker 线程执行，避免阻塞事件循环）
+        result = await asyncio.to_thread(
+            parse_analysis_result,
             target=target,
             target_type=target_type,
             llm_output=final_output,
@@ -345,10 +368,12 @@ class SecurityAgent:
         except Exception as e:
             logger.warning("会话存档失败: %s", e)
 
-        # 事后学习（批量模式跳过）
+        # 事后学习（批量模式跳过）。同步函数（内部可能同步调 LLM 提炼技能），
+        # 放 worker 线程执行，避免阻塞事件循环
         learning_actions = []
         if not batch:
-            learning_actions = self._post_analyze_learning(
+            learning_actions = await asyncio.to_thread(
+                self._post_analyze_learning,
                 target=target,
                 target_type=target_type,
                 result=result,
@@ -434,7 +459,8 @@ class SecurityAgent:
                 final_output = msg["content"]
                 break
 
-        result = parse_analysis_result(
+        result = await asyncio.to_thread(
+            parse_analysis_result,
             target=self._session_target,
             target_type=self._session_target_type,
             llm_output=final_output,
@@ -455,8 +481,9 @@ class SecurityAgent:
         except Exception as e:
             logger.warning("会话存档失败: %s", e)
 
-        # 事后学习
-        learning_actions = self._post_analyze_learning(
+        # 事后学习（同步函数，内部可能同步调 LLM，放 worker 线程执行）
+        learning_actions = await asyncio.to_thread(
+            self._post_analyze_learning,
             target=self._session_target,
             target_type=self._session_target_type,
             result=result,
@@ -475,6 +502,115 @@ class SecurityAgent:
 
         # 断开连接
         await self.disconnect()
+
+    async def _stream_completion(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tool_defs: list[dict[str, Any]] | None,
+        on_stream: Callable[[str], None] | None = None,
+    ) -> tuple[str, str, list[dict[str, str]], dict]:
+        """发起一次流式补全（异步客户端）并读取完整响应。
+
+        Returns:
+            (content, reasoning_content, tool_calls, usage)
+            tool_calls: [{"id": str, "name": str, "arguments": str}]
+            usage: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+        """
+        response = await self.llm_async.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tool_defs if tool_defs else None,
+            temperature=self.config.llm.temperature,
+            max_tokens=self.config.llm.max_tokens,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+
+        content_buf = ""
+        reasoning_buf = ""
+        tool_calls_data: dict[int, dict] = {}  # index -> {id, name, arguments}
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        async for chunk in response:
+            # 流式 usage：最后一个 chunk（choices 为空）携带 usage
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage:
+                usage["prompt_tokens"] += getattr(chunk_usage, "prompt_tokens", 0) or 0
+                usage["completion_tokens"] += getattr(chunk_usage, "completion_tokens", 0) or 0
+                usage["total_tokens"] += getattr(chunk_usage, "total_tokens", 0) or 0
+
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if not delta:
+                continue
+
+            # reasoning_content（DeepSeek Reasoner）
+            rc = getattr(delta, "reasoning_content", None)
+            if rc:
+                reasoning_buf += rc
+
+            # 文本内容
+            if delta.content:
+                content_buf += delta.content
+                if on_stream:
+                    on_stream(delta.content)
+
+            # 工具调用
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_data:
+                        tool_calls_data[idx] = {"id": "", "name": "", "arguments": ""}
+                    if tc_delta.id:
+                        tool_calls_data[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_data[idx]["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_data[idx]["arguments"] += tc_delta.function.arguments
+
+        tool_calls = [
+            {"id": d["id"], "name": d["name"], "arguments": d["arguments"]}
+            for d in (tool_calls_data[i] for i in sorted(tool_calls_data.keys()))
+        ]
+        return content_buf, reasoning_buf, tool_calls, usage
+
+    async def _salvage_final_output(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        msg: Any,
+        total_usage: dict,
+        on_stream: Callable[[str], None] | None = None,
+    ) -> str:
+        """达到迭代上限时的兜底输出。
+
+        若本轮已收集过工具数据，追加一条"禁止工具调用"的指令再发起一次
+        补全（不计入迭代数），强制 LLM 基于已有信息输出最终结论；
+        调用失败或无工具数据时，回退到最后一条 assistant 内容。
+        """
+        fallback = msg.content if msg and msg.content else "分析未完成（达到最大迭代次数）"
+        has_tool_data = any(m.get("role") == "tool" for m in messages)
+        if not has_tool_data:
+            return fallback
+        messages.append({
+            "role": "user",
+            "content": ("已达到工具调用上限。禁止再调用任何工具，"
+                        "请立即基于已收集的信息，按既定 JSON 格式输出最终分析结论。"),
+        })
+        try:
+            content, _reasoning, _tool_calls, usage = await self._stream_completion(
+                model, messages, None, on_stream=on_stream,
+            )
+            for k in total_usage:
+                total_usage[k] += usage[k]
+            if content.strip():
+                messages.append({"role": "assistant", "content": content})
+                logger.info("salvage 成功：基于已有信息输出最终结论")
+                return content
+        except Exception as e:
+            logger.warning("salvage 调用失败: %s", redact_secrets(str(e)))
+        return fallback
 
     async def _run_loop(
         self,
@@ -517,28 +653,16 @@ class SecurityAgent:
             logger.debug("Agent 循环 - 迭代 %d/%d", iteration, max_iterations)
 
             try:
-                response = self.llm.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tool_defs if tool_defs else None,
-                    temperature=self.config.llm.temperature,
-                    max_tokens=self.config.llm.max_tokens,
-                    stream=True,
-                    stream_options={"include_usage": True},
+                content_buf, reasoning_buf, tool_calls, usage = await self._stream_completion(
+                    model, messages, tool_defs, on_stream=on_stream,
                 )
             except Exception as e:
                 # LLM 调用失败：重试一次，然后降级到 fast 模型
                 logger.warning("LLM 调用失败 (迭代 %d): %s，重试中...", iteration, redact_secrets(str(e)))
                 try:
                     fallback_model = self.config.models.fast or model
-                    response = self.llm.chat.completions.create(
-                        model=fallback_model,
-                        messages=messages,
-                        tools=tool_defs if tool_defs else None,
-                        temperature=self.config.llm.temperature,
-                        max_tokens=self.config.llm.max_tokens,
-                        stream=True,
-                        stream_options={"include_usage": True},
+                    content_buf, reasoning_buf, tool_calls, usage = await self._stream_completion(
+                        fallback_model, messages, tool_defs, on_stream=on_stream,
                     )
                     logger.info("降级到模型 %s 成功", fallback_model)
                 except Exception as e2:
@@ -547,62 +671,21 @@ class SecurityAgent:
                     final_output = f"LLM 调用失败: {_safe_err}"
                     break
 
-            # 流式读取完整响应
-            content_buf = ""
-            tool_calls_data: dict[int, dict] = {}  # index -> {id, name, arguments}
-            reasoning_buf = ""
-
-            for chunk in response:
-                # 流式 usage：最后一个 chunk（choices 为空）携带 usage
-                chunk_usage = getattr(chunk, "usage", None)
-                if chunk_usage:
-                    total_usage["prompt_tokens"] += getattr(chunk_usage, "prompt_tokens", 0) or 0
-                    total_usage["completion_tokens"] += getattr(chunk_usage, "completion_tokens", 0) or 0
-                    total_usage["total_tokens"] += getattr(chunk_usage, "total_tokens", 0) or 0
-
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if not delta:
-                    continue
-
-                # reasoning_content（DeepSeek Reasoner）
-                rc = getattr(delta, "reasoning_content", None)
-                if rc:
-                    reasoning_buf += rc
-
-                # 文本内容
-                if delta.content:
-                    content_buf += delta.content
-                    if on_stream:
-                        on_stream(delta.content)
-
-                # 工具调用
-                if delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_data:
-                            tool_calls_data[idx] = {"id": "", "name": "", "arguments": ""}
-                        if tc_delta.id:
-                            tool_calls_data[idx]["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                tool_calls_data[idx]["name"] = tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                tool_calls_data[idx]["arguments"] += tc_delta.function.arguments
+            for k in total_usage:
+                total_usage[k] += usage[k]
 
             # 构造 msg 对象（兼容原有逻辑）
             msg = SimpleNamespace()
             msg.content = content_buf
             msg.reasoning_content = reasoning_buf or None
             msg.tool_calls = []
-            if tool_calls_data:
-                for idx in sorted(tool_calls_data.keys()):
-                    d = tool_calls_data[idx]
-                    tc = SimpleNamespace()
-                    tc.id = d["id"]
-                    tc.function = SimpleNamespace()
-                    tc.function.name = d["name"]
-                    tc.function.arguments = d["arguments"]
-                    msg.tool_calls.append(tc)
+            for d in tool_calls:
+                tc = SimpleNamespace()
+                tc.id = d["id"]
+                tc.function = SimpleNamespace()
+                tc.function.name = d["name"]
+                tc.function.arguments = d["arguments"]
+                msg.tool_calls.append(tc)
 
             # 展示思考过程
             if on_thinking:
@@ -694,9 +777,12 @@ class SecurityAgent:
             self._maybe_slide_window(messages)
 
         else:
-            # 达到 max_iterations
+            # 达到 max_iterations：兜底 salvage，禁止工具调用，
+            # 强制 LLM 基于已收集信息输出最终结论，避免浪费已完成的工具调用
             logger.warning("达到最大迭代次数 %d，强制结束", max_iterations)
-            final_output = msg.content if msg and msg.content else "分析未完成（达到最大迭代次数）"
+            final_output = await self._salvage_final_output(
+                messages, model, msg, total_usage, on_stream=on_stream,
+            )
 
         return final_output, msg, total_usage
 
@@ -815,11 +901,17 @@ class SecurityAgent:
         """公开接口：搜索历史。"""
         return self.sessions.search(query, limit=limit)
 
-    def save_user_skill(self, name: str, content: str, trigger: str = "") -> str:
-        """保存用户技能（公共接口，供 CLI /save 和 LLM 工具使用）。"""
+    def save_user_skill(self, name: str, content: str, trigger: str = "",
+                        quarantine: bool = False) -> str:
+        """保存用户技能（公共接口，供 CLI /save 和 LLM 工具使用）。
+
+        Args:
+            quarantine: True 时保存为禁用待审核状态（.disabled 标记），
+                        需人工 enable 后才参与匹配。
+        """
         if not trigger:
             trigger = "manual"
-        path = self.skills.create_skill(name, content, trigger)
+        path = self.skills.create_skill(name, content, trigger, quarantine=quarantine)
         return str(path)
 
 
