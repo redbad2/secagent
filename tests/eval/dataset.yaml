@@ -1,0 +1,52 @@
+# secagent 分析质量评估数据集
+#
+# 每条样本包含目标、期望风险等级（含允许偏差档）、类别和说明。
+# 评估器对比 agent 实际输出与 expected_risk_level 判定命中/误报/漏报。
+#
+# expected_risk_level 支持单值（精确匹配）或列表（任一命中即算正确，
+# 用于标注不确定的边界样本）。
+#
+# 类别说明：
+#   malicious      已知恶意（C2/钓鱼/木马），期望 高/严重
+#   benign         已知良性（高流行度 + ICP 备案），期望 低
+#   borderline     边界样本（CDN 共享 IP / 低流量新注册），用于检验误报抑制
+#
+# 注意：在线评估会真实调用 MCP 与 LLM，消耗配额；回放模式用 fixture 替代。
+# 数据集应随真实案例积累持续扩充。以下为初始基线样本。
+
+version: 1
+description: "初始评估数据集，含恶意/良性/边界三类样本"
+
+samples:
+  # === 已知恶意样本 ===
+  - target: "cloudflare.windowsupdatedns.site"
+    expected_risk_level: ["高", "严重"]
+    category: malicious
+    note: "Chrome 品牌仿冒钓鱼 + Cobalt Strike C2（历史真实案例）"
+
+  - target: "cn-chrome-chrome-cn.hl.cn"
+    expected_risk_level: ["高", "严重"]
+    category: malicious
+    note: "Chrome 品牌仿冒钓鱼站点（历史真实案例）"
+
+  # === 已知良性样本 ===
+  - target: "baidu.com"
+    expected_risk_level: "低"
+    category: benign
+    note: "高流行度 + ICP 备案，典型良性域名"
+
+  - target: "qq.com"
+    expected_risk_level: "低"
+    category: benign
+    note: "高流行度 + ICP 备案，典型良性域名"
+
+  - target: "8.8.8.8"
+    expected_risk_level: "低"
+    category: benign
+    note: "Google 公共 DNS，典型良性 IP"
+
+  # === 边界样本（检验误报抑制） ===
+  - target: "www.cloudflare.com"
+    expected_risk_level: "低"
+    category: borderline
+    note: "CDN 厂商自身域名，解析到 CDN 共享 IP，应判定良性"

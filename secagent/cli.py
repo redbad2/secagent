@@ -1182,6 +1182,76 @@ def cmd_update():
     console.print("\n[dim]重启 secagent 以使用新版本[/dim]\n")
 
 
+def cmd_eval(agent, dataset_path: str = "", online: bool = False,
+             save_baseline: bool = False):
+    """分析质量评估。"""
+    from secagent.eval import run_eval, save_baseline as save_bl, compare_baseline, \
+        DEFAULT_DATASET, BASELINE_PATH
+
+    ds = Path(dataset_path) if dataset_path else None
+    console.print(f"\n[bold cyan]分析质量评估[/bold cyan]")
+    mode_label = "在线（真实调用）" if online else "回放（优先缓存）"
+    console.print(f"[dim]模式: {mode_label} | 数据集: {ds or DEFAULT_DATASET}[/dim]\n")
+
+    async def _run():
+        return await run_eval(agent, dataset_path=ds, online=online)
+
+    try:
+        report = asyncio.run(asyncio.wait_for(_run(), timeout=1800 if online else 60))
+    except asyncio.TimeoutError:
+        console.print("[red]评估超时[/red]\n")
+        return
+
+    # 渲染结果表
+    table = Table(title="评估结果")
+    table.add_column("目标", style="cyan")
+    table.add_column("类别", style="dim")
+    table.add_column("期望", style="yellow")
+    table.add_column("实际", style="white")
+    table.add_column("命中", style="green")
+    for sr in report.samples:
+        if sr.skipped if hasattr(sr, "skipped") else False:
+            continue
+        hit_mark = "[green]✓[/green]" if sr.hit else "[red]✗[/red]"
+        actual_color = {"低": "green", "中": "yellow", "高": "red", "严重": "bold red"}.get(sr.actual, "white")
+        exp_str = "/".join(sr.expected) if isinstance(sr.expected, list) else sr.expected
+        table.add_row(sr.target[:30], sr.category, exp_str,
+                      f"[{actual_color}]{sr.actual}[/{actual_color}]", hit_mark)
+    console.print(table)
+
+    # 汇总指标
+    console.print(f"\n[bold]命中率:[/bold] {report.hit_rate:.1%} "
+                  f"({report.passed}/{report.total - report.skipped} 评估, "
+                  f"{report.skipped} 跳过)" if report.skipped
+                  else f"\n[bold]命中率:[/bold] {report.hit_rate:.1%} "
+                       f"({report.passed}/{report.total} 评估)")
+    if report.false_positive:
+        console.print(f"[yellow]误报: {report.false_positive}（良性判恶意）[/yellow]")
+    if report.false_negative:
+        console.print(f"[red]漏报: {report.false_negative}（恶意判良性）[/red]")
+    if report.total - report.skipped > 0:
+        console.print(f"[dim]平均工具调用: {report.avg_tools} | "
+                      f"平均 token: {int(report.avg_tokens)} | "
+                      f"双轨分歧率: {report.discrepancy_rate:.1%}[/dim]")
+
+    # 基线对比
+    if save_baseline:
+        p = save_bl(report)
+        console.print(f"\n[green]基线已保存: {p}[/green]")
+    else:
+        cmp = compare_baseline(report)
+        if cmp["status"] == "ok":
+            console.print(f"\n[green]✓ 与基线一致（命中率 {cmp['current_hit_rate']:.1%} "
+                          f">= {cmp['baseline_hit_rate']:.1%}）[/green]")
+        elif cmp["status"] == "regression":
+            console.print(f"\n[red]✗ 检测到退化:[/red]")
+            for r in cmp["regressions"]:
+                console.print(f"  [red]{r}[/red]")
+        else:
+            console.print(f"\n[dim]{cmp['message']}[/dim]")
+    console.print()
+
+
 def cmd_monitor(agent, action: str, target: str = "", depth: str = "quick", concurrency: int = 3):
     """定时监控管理。"""
     from secagent.monitor import MonitorDB
@@ -1592,6 +1662,13 @@ def main():
     p_serve.add_argument("--host", default="127.0.0.1", help="监听地址")
     p_serve.add_argument("--port", type=int, default=8000, help="监听端口")
 
+    p_eval = subparsers.add_parser("eval", help="分析质量评估")
+    p_eval.add_argument("--dataset", help="自定义数据集 YAML 路径")
+    p_eval.add_argument("--online", action="store_true",
+                        help="在线模式（真实调 LLM+MCP，消耗配额；默认回放缓存）")
+    p_eval.add_argument("--save-baseline", action="store_true",
+                        help="结果写入 baseline.json 作为回归基线")
+
     args = parser.parse_args()
 
     # 日志
@@ -1624,7 +1701,7 @@ def main():
             console.print(f"  [red]✗ {e}[/red]")
         # 需要调用 LLM 的命令在配置不全时无法工作，提前友好退出；
         # config show / status / skills 等管理命令仍可运行以便排查
-        _llm_commands = {"analyze", "batch", "serve", "compare", "monitor"}
+        _llm_commands = {"analyze", "batch", "serve", "compare", "monitor", "eval"}
         if args.command in _llm_commands or args.command is None:
             console.print("[dim]请编辑 ~/.secagent/config.yaml 或设置环境变量后重试[/dim]\n")
             sys.exit(1)
@@ -1693,6 +1770,12 @@ def main():
     elif args.command == "serve":
         from secagent.server import run_server
         run_server(host=args.host, port=args.port)
+        return
+    elif args.command == "eval":
+        cmd_eval(agent, getattr(args, "dataset", "") or "",
+                 online=getattr(args, "online", False),
+                 save_baseline=getattr(args, "save_baseline", False))
+        agent.close()
         return
 
     # 交互式模式

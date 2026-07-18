@@ -119,9 +119,13 @@ async def web_fetch(url: str, timeout: int = 15, verify_ssl: bool = False) -> st
             if len(text) > 5000:
                 text = text[:5000] + "\n...[截断]"
 
+            # 内容信任边界：网页内容是不可信数据，用明确标记包裹，
+            # 并转义形如伪造指令的行（防止恶意页面注入 system/user 指令）
+            text = _sanitize_untrusted(text)
+
             # 附加 HTTP 元信息
             meta = f"[HTTP {resp.status_code}] {resp.url}\n[Content-Type: {content_type}]\n[Redirected: {'是' if str(resp.url) != url else '否'}]\n\n"
-            return meta + text
+            return meta + f"<untrusted_web_content>\n{text}\n</untrusted_web_content>"
 
     except httpx.TimeoutException:
         return f"[超时] {url} (timeout={timeout}s)"
@@ -171,6 +175,30 @@ SAVE_SKILL_TOOL_DEF = {
 async def _save_skill_builtin(name: str, content: str, trigger: str) -> str:
     """内置 save_skill 工具：需要外部注入 agent 实例才能工作。"""
     return f"[错误] save_skill 未初始化，请检查 agent 配置"
+
+
+# 伪造指令模式：网页内容中可能用来注入 system/user 指令的行
+_INJECTION_PATTERNS = [
+    re.compile(r'^\s*"role"\s*:\s*"system"', re.MULTILINE | re.IGNORECASE),
+    re.compile(r'^\s*"role"\s*:\s*"user"', re.MULTILINE | re.IGNORECASE),
+    re.compile(r'^\s*"role"\s*:\s*"assistant"', re.MULTILINE | re.IGNORECASE),
+    re.compile(r'^#{1,3}\s*(instruction|system|ignore|prompt)', re.MULTILINE | re.IGNORECASE),
+    re.compile(r'^\s*system\s*[:：]', re.MULTILINE | re.IGNORECASE),
+]
+
+
+def _sanitize_untrusted(text: str) -> str:
+    """转义网页内容中形如伪造指令的行（内容信任边界）。
+
+    web_fetch 抓取的页面内容是不可信数据，恶意页面可能嵌入形如
+    "role": "system" 或 ### Instruction 的文本试图劫持 LLM。
+    本函数将匹配到的行前缀加 [SANITIZED] 标注，使 LLM 能识别其非指令性质。
+    """
+    if not text:
+        return text
+    for pat in _INJECTION_PATTERNS:
+        text = pat.sub(r"[SANITIZED] \g<0>", text)
+    return text
 
 
 def _is_safe_url(url: str) -> bool:
