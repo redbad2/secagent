@@ -19,7 +19,8 @@ from secagent.mcp_manager import MCPManager
 from secagent.prompt_builder import build_system_prompt
 from secagent.result_parser import (
     AnalysisResult, is_valid_ip, detect_target_type, parse_analysis_result,
-    extract_signals, compute_risk_score, RISK_LEVELS,
+    extract_signals, extract_signals_with_sources, compute_risk_score, RISK_LEVELS,
+    validate_iocs,
 )
 from secagent.cache import ResultCache
 
@@ -303,8 +304,9 @@ class SecurityAgent:
         )
         result.token_usage = token_usage
 
-        # 独立风险评分：从工具返回中提取信号，用 compute_risk_score 交叉验证 LLM 判断
-        signals = extract_signals(messages)
+        # 独立风险评分：从工具返回中提取信号（按 server 分发到 per-server parser），
+        # 用 compute_risk_score 交叉验证 LLM 判断
+        signals, signal_sources = extract_signals_with_sources(messages)
         ind_score, ind_level = compute_risk_score(
             threat_labels=signals["threat_labels"],
             infra_org=signals["infra_org"],
@@ -315,6 +317,17 @@ class SecurityAgent:
         result.independent_risk_level = ind_level
         result.independent_score = ind_score
 
+        # 数据源覆盖度（P2-1）：记录连接/失败的 server，关键 server 缺失时压低置信度
+        connected_servers = list(self.mcp._sessions.keys())
+        failed_servers = list(self.mcp.failed_servers)
+        critical_failed = [s for s in failed_servers if s in CRITICAL_SERVERS]
+        result.coverage = {
+            "connected": connected_servers,
+            "failed": failed_servers,
+            "critical_failed": critical_failed,
+            "sources_with_signal": signal_sources,
+        }
+
         # 独立置信度：基于数据源数量 + 信号提取完整度
         distinct_servers = {t.split("__")[0] for t in tools_used if "__" in t}
         source_factor = min(len(distinct_servers) / 4.0, 1.0)  # 4 个数据源即满
@@ -322,13 +335,18 @@ class SecurityAgent:
                          signals["domain_age_days"] is not None, signals["has_icp"]]
         completeness = sum(1 for f in signal_fields if f) / 4.0
         result.independent_confidence = round((source_factor + completeness) / 2.0, 2)
+        # 关键 server 缺失时置信度上限压到 0.5
+        if critical_failed:
+            result.independent_confidence = min(result.independent_confidence, 0.5)
 
-        # 分歧标注
+        # 分歧标注（带信号来源）
         if ind_level and result.risk_level and result.risk_level != "未知":
             if ind_level == result.risk_level:
-                result.risk_discrepancy = "一致"
+                source_tag = f" [来源: {', '.join(signal_sources)}]" if signal_sources else ""
+                result.risk_discrepancy = f"一致{source_tag}"
             else:
-                result.risk_discrepancy = f"分歧: LLM={result.risk_level}, 独立={ind_level}"
+                source_tag = f" [信号来源: {', '.join(signal_sources)}]" if signal_sources else ""
+                result.risk_discrepancy = f"分歧: LLM={result.risk_level}, 独立={ind_level}{source_tag}"
         elif not signals["threat_labels"]:
             result.risk_discrepancy = "无信号（未提取到威胁标签）"
 
@@ -339,6 +357,14 @@ class SecurityAgent:
                 "建议结合域名本身行为和页面内容综合判断"
             )
             logger.info("误报抑制: 检测到 CDN/WAF 共享 IP，LLM 报 %s 可能误报", result.risk_level)
+
+        # IOC 校验（P1-2）：验证 LLM 输出的 IOC 是否在工具返回中验证过
+        if result.iocs:
+            tool_texts = [str(m["content"]) for m in messages
+                          if m.get("role") == "tool" and m.get("content")]
+            verified, unverified = validate_iocs(result.iocs, tool_texts)
+            result.verified_iocs = verified
+            result.unverified_iocs = unverified
 
         logger.info("风险交叉验证: LLM=%s, 独立=%s(%.2f), 置信度=%.2f, %s",
                      result.risk_level, ind_level, ind_score,

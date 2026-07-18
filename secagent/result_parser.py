@@ -32,6 +32,11 @@ class AnalysisResult:
     token_usage: dict = field(default_factory=dict)  # LLM token 用量
     false_positive_warning: str = ""    # 误报警告（CDN/WAF 共享 IP 等）
     from_cache: bool = False            # 是否来自结果缓存（--reuse 命中）
+    # IOC 校验（P1-2）
+    verified_iocs: list[dict] = field(default_factory=list)    # [{value, type}]
+    unverified_iocs: list[dict] = field(default_factory=list)  # LLM 幻觉或未在工具返回中验证
+    # 数据源覆盖度（P2-1）
+    coverage: dict = field(default_factory=dict)  # {connected, failed, critical_failed, sources_with_signal}
 
     def __post_init__(self):
         if not self.timestamp:
@@ -57,6 +62,9 @@ class AnalysisResult:
             "risk_discrepancy": self.risk_discrepancy,
             "token_usage": self.token_usage,
             "false_positive_warning": self.false_positive_warning,
+            "verified_iocs": self.verified_iocs,
+            "unverified_iocs": self.unverified_iocs,
+            "coverage": self.coverage,
         }
 
     @staticmethod
@@ -85,6 +93,9 @@ class AnalysisResult:
             risk_discrepancy=data.get("risk_discrepancy", ""),
             token_usage=data.get("token_usage", {}),
             false_positive_warning=data.get("false_positive_warning", ""),
+            verified_iocs=data.get("verified_iocs", []),
+            unverified_iocs=data.get("unverified_iocs", []),
+            coverage=data.get("coverage", {}),
             from_cache=True,
         )
 
@@ -149,6 +160,27 @@ def is_cve(target: str) -> bool:
     """检测是否为 CVE ID（如 CVE-2024-1234）。"""
     import re
     return bool(re.match(r'^CVE-\d{4}-\d{4,}$', target.strip().upper()))
+
+
+def is_url(target: str) -> bool:
+    """检测是否为 URL（含 scheme）。"""
+    return target.strip().lower().startswith(("http://", "https://", "ftp://"))
+
+
+def classify_ioc(value: str) -> str:
+    """分类 IOC 类型：ip/domain/hash/cve/url/unknown。"""
+    v = value.strip()
+    if is_valid_ip(v):
+        return "ip"
+    if is_url(v):
+        return "url"
+    if is_hash(v):
+        return "hash"
+    if is_cve(v):
+        return "cve"
+    if v and "." in v and " " not in v:
+        return "domain"
+    return "unknown"
 
 
 def detect_target_type(target: str) -> str:
@@ -378,9 +410,8 @@ def _default_signals() -> dict[str, Any]:
 def extract_signals_from_text(text: str) -> dict[str, Any]:
     """从单条工具返回文本中提取风险评分所需信号（纯函数）。
 
-    这是 extract_signals 的核心逻辑，抽成纯函数供裁剪模块复用：
-    裁剪时先调用本函数提取信号作为"保留区"，再对原始文本截断，
-    保证 compute_risk_score 的输入不会因裁剪而丢失。
+    保留为薄包装：优先用 generic parser 的 regex_fallback（与原逻辑完全一致），
+    未来可按 server 分发到结构化 parser（见 secagent/parsers 包）。
 
     Args:
         text: 单条 MCP 工具返回的文本（经 _extract_content 拍平的纯文本）
@@ -388,114 +419,8 @@ def extract_signals_from_text(text: str) -> dict[str, Any]:
     Returns:
         与 extract_signals 相同结构的 dict
     """
-    if not text or not text.strip():
-        return _default_signals()
-
-    # 1. 威胁标签
-    threat_labels: list[str] = []
-    for m in re.finditer(r'"tags?"\s*:\s*\[([^\]]+)\]', text, re.IGNORECASE):
-        for val_m in re.finditer(r'["\']([^"\']+)["\']', m.group(1)):
-            val = val_m.group(1).strip()
-            if val and val.lower() not in _RISK_CLASSES:
-                threat_labels.append(val)
-    for m in re.finditer(r'"tag"\s*:\s*["\']([^"\']+)["\']', text, re.IGNORECASE):
-        val = m.group(1).strip()
-        if val.lower() not in _RISK_CLASSES:
-            threat_labels.append(val)
-    for m in re.finditer(r'classification["\']?\s*[:=]\s*["\']([^"\']+)', text, re.IGNORECASE):
-        val = m.group(1).strip()
-        if val.lower() not in _RISK_CLASSES:
-            threat_labels.append(val)
-    seen: set[str] = set()
-    threat_labels = [t for t in threat_labels if not (t.lower() in seen or seen.add(t.lower()))]
-
-    # 2. 域名年龄
-    domain_age_days = None
-    for pat in _DATE_PATTERNS:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            try:
-                date_str = m.group(1).replace("/", "-")
-                reg_date = datetime.strptime(date_str, "%Y-%m-%d")
-                domain_age_days = max((datetime.now() - reg_date).days, 0)
-                break
-            except (ValueError, TypeError):
-                pass
-
-    # 3. ICP 备案
-    has_icp = bool(re.search(r'[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤川青藏琼宁]?ICP备\d+', text))
-
-    # 4. 基础设施组织
-    infra_org = ""
-    for pat in _ORG_PATTERNS:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            infra_org = m.group(1).strip()
-            break
-    if not infra_org:
-        for infra_key in INFRA_TRUST:
-            if infra_key.lower() in text.lower():
-                infra_org = infra_key
-                break
-
-    # 5. 标签置信度
-    confidence = 0.0
-    conf_match = re.search(r'"confidence["\']?\s*[:=]\s*([0-9.]+)', text, re.IGNORECASE)
-    if conf_match:
-        try:
-            val = float(conf_match.group(1))
-            confidence = val / 100.0 if val > 1.0 else val
-        except (ValueError, TypeError):
-            pass
-
-    # 6. CDN/WAF 共享 IP 检测
-    text_lower = text.lower()
-    is_cdn_ip = any(kw in text_lower for kw in _CDN_KEYWORDS)
-
-    # 7. 补充：解析降级/prune 保留区的 key=value 摘要格式
-    #    _maybe_slide_window 降级后 tool 消息变为 "[已降级 | tag=c2,malware | conf=0.90 | age=5d]"，
-    #    prune_tool_output 保留区为 "[关键信号: tag=c2 | ...]"。这些格式上面的 JSON 正则匹配不到，
-    #    此处在 JSON 提取失败时补充解析，保证 compute_risk_score 不因裁剪/降级丢信号。
-    #    仅在文本含保留区标记时生效，避免误匹配普通工具返回。
-    if "[已降级" in text or "[关键信号" in text:
-        if not threat_labels:
-            m = re.search(r'tag=([^|\]]+)', text)
-            if m:
-                for v in m.group(1).strip().split(','):
-                    v = v.strip()
-                    if v and v.lower() not in _RISK_CLASSES:
-                        threat_labels.append(v)
-        if domain_age_days is None:
-            m = re.search(r'age=(\d+)d', text)
-            if m:
-                try:
-                    domain_age_days = int(m.group(1))
-                except ValueError:
-                    pass
-        if not has_icp:
-            has_icp = "icp=yes" in text_lower
-        if not infra_org:
-            m = re.search(r'org=([^|\]]+)', text)
-            if m:
-                infra_org = m.group(1).strip()
-        if confidence == 0.0:
-            m = re.search(r'conf=([0-9.]+)', text)
-            if m:
-                try:
-                    confidence = float(m.group(1))
-                except ValueError:
-                    pass
-        if not is_cdn_ip:
-            is_cdn_ip = "cdn=yes" in text_lower
-
-    return {
-        "threat_labels": threat_labels,
-        "domain_age_days": domain_age_days,
-        "has_icp": has_icp,
-        "infra_org": infra_org,
-        "confidence": confidence,
-        "is_cdn_ip": is_cdn_ip,
-    }
+    from secagent.parsers.generic import regex_fallback
+    return regex_fallback(text)
 
 
 def extract_signals(messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -553,6 +478,125 @@ def extract_signals(messages: list[dict[str, Any]]) -> dict[str, Any]:
     merged["threat_labels"] = all_labels
     merged["domain_age_days"] = min_age
     return merged
+
+
+def extract_signals_with_sources(messages: list[dict[str, Any]]) -> tuple[dict[str, Any], list[str]]:
+    """从 MCP 工具返回中提取信号，并标注信号来源 server。
+
+    按 server 分发到对应 parser（secagent/parsers 包），合并规则与
+    extract_signals 一致，但额外返回产出信号的 server 名列表。
+
+    Args:
+        messages: 完整对话消息列表（含 role=tool 消息）
+
+    Returns:
+        (merged_signals, source_servers)
+        merged_signals: 与 extract_signals 相同结构的 dict
+        source_servers: 产出过信号的 server 名列表（如 ["ctia_domain", "qianxin_fdp_ip"]）
+    """
+    from secagent.parsers import parse_server_output
+    from secagent.parsers.generic import default_signals
+
+    # 建立 tool_call_id -> server 映射（从 assistant 消息的 tool_calls 反查）
+    tool_call_to_server: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                tc_id = tc.get("id", "")
+                func_name = tc.get("function", {}).get("name", "")
+                # full_name 格式 server__tool，取 server 部分
+                if "__" in func_name:
+                    server = func_name.split("__", 1)[0]
+                else:
+                    server = "builtin"
+                tool_call_to_server[tc_id] = server
+
+    # 遍历 tool 消息，按 server 分发解析
+    merged = default_signals()
+    all_labels: list[str] = []
+    label_seen: set[str] = set()
+    min_age = None
+    source_servers: list[str] = []
+    source_seen: set[str] = set()
+
+    for msg in messages:
+        if msg.get("role") != "tool" or not msg.get("content"):
+            continue
+        content = str(msg["content"])
+        tc_id = msg.get("tool_call_id", "")
+        server = tool_call_to_server.get(tc_id, "unknown")
+
+        # 按 server 分发解析
+        sig = parse_server_output(server, content)
+
+        # 检查该条是否产出了信号（用于来源标注）
+        has_signal = bool(sig["threat_labels"] or sig["infra_org"]
+                          or sig["domain_age_days"] is not None or sig["has_icp"]
+                          or sig["confidence"] > 0 or sig["is_cdn_ip"])
+        if has_signal and server not in source_seen:
+            source_seen.add(server)
+            source_servers.append(server)
+
+        # 合并（与 extract_signals 逻辑一致）
+        for label in sig["threat_labels"]:
+            if label.lower() not in label_seen:
+                label_seen.add(label.lower())
+                all_labels.append(label)
+        if sig["domain_age_days"] is not None:
+            if min_age is None or sig["domain_age_days"] < min_age:
+                min_age = sig["domain_age_days"]
+        if sig["has_icp"]:
+            merged["has_icp"] = True
+        if sig["is_cdn_ip"]:
+            merged["is_cdn_ip"] = True
+        if not merged["infra_org"] and sig["infra_org"]:
+            merged["infra_org"] = sig["infra_org"]
+        if merged["confidence"] == 0.0 and sig["confidence"] > 0.0:
+            merged["confidence"] = sig["confidence"]
+
+    merged["threat_labels"] = all_labels
+    merged["domain_age_days"] = min_age
+    return merged, source_servers
+
+
+def validate_iocs(iocs: list[str], tool_outputs: list[str]) -> tuple[list[dict], list[dict]]:
+    """校验 LLM 输出的 IOC 是否在工具返回中验证过。
+
+    LLM 可能幻觉出不存在的 IOC；本函数对每个 IOC 做类型分类 + 边界匹配验证，
+    返回已验证和未验证两组（未验证不删除，标记为"待核实"降权展示）。
+
+    Args:
+        iocs: LLM 输出的 IOC 列表（list[str]）
+        tool_outputs: 工具返回的文本列表（从 messages 中 role=tool 的 content 取）
+
+    Returns:
+        (verified, unverified)，每个元素是 {"value": str, "type": str}
+    """
+    verified: list[dict] = []
+    unverified: list[dict] = []
+    seen_verified: set[str] = set()
+    seen_unverified: set[str] = set()
+    combined = "\n".join(tool_outputs)
+
+    for ioc in iocs:
+        ioc = (ioc or "").strip()
+        if not ioc:
+            continue
+        ioc_type = classify_ioc(ioc)
+        # 边界匹配：避免子串误匹配（如 1.2.3.4 误中 11.2.3.4）
+        # 对 IP/hash 用 \b 边界；对 domain 用 URL 边界或独立词
+        pattern = re.escape(ioc)
+        found = bool(re.search(rf"(?<![\w.]){pattern}(?![\w.])", combined))
+
+        key = ioc.lower()
+        if found and key not in seen_verified:
+            verified.append({"value": ioc, "type": ioc_type})
+            seen_verified.add(key)
+        elif not found and key not in seen_unverified:
+            unverified.append({"value": ioc, "type": ioc_type})
+            seen_unverified.add(key)
+
+    return verified, unverified
 
 
 def compute_risk_score(

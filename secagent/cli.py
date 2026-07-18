@@ -253,12 +253,41 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
         if result.recommendation:
             console.print(f"\n[bold]建议:[/bold] {result.recommendation}")
 
+        # IOC 分组展示（P1-2）：已验证 / 待核实
+        if result.verified_iocs or result.unverified_iocs:
+            console.print()
+            if result.verified_iocs:
+                console.print(f"[bold green]已验证 IOC[/bold green] ({len(result.verified_iocs)}):")
+                for ioc in result.verified_iocs:
+                    console.print(f"  [green]✓[/green] [{ioc['type']}] {ioc['value']}")
+            if result.unverified_iocs:
+                console.print(f"[bold yellow]待核实 IOC[/bold yellow] ({len(result.unverified_iocs)}):")
+                for ioc in result.unverified_iocs:
+                    console.print(f"  [yellow]?[/yellow] [{ioc['type']}] {ioc['value']}")
+
         # token 用量统计
         if result.token_usage and result.token_usage.get("total_tokens"):
             u = result.token_usage
             console.print(f"\n[dim]Token: {u.get('prompt_tokens', 0)} prompt + "
                           f"{u.get('completion_tokens', 0)} completion = "
                           f"{u.get('total_tokens', 0)} total[/dim]")
+
+        # 数据源覆盖度（P2-1）
+        if result.coverage:
+            cov = result.coverage
+            connected = cov.get("connected", [])
+            failed = cov.get("failed", [])
+            critical_failed = cov.get("critical_failed", [])
+            if failed:
+                color = "red" if critical_failed else "yellow"
+                console.print(f"\n[{color}]数据源覆盖度:[/{color}] "
+                              f"{len(connected)} 连接, {len(failed)} 失败")
+                if critical_failed:
+                    console.print(f"  [red]⚠ 关键 server 缺失: {', '.join(critical_failed)}[/red]")
+                else:
+                    console.print(f"  [yellow]• 失败: {', '.join(failed)}[/yellow]")
+            elif connected:
+                console.print(f"\n[green]数据源覆盖度:[/green] {len(connected)} 个 server 全部连接")
 
         console.print()
         return
