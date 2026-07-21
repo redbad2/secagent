@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from secagent.parsers.generic import default_signals, regex_fallback
+from secagent.parsers.generic import default_signals, regex_fallback, compute_cdn_flag
 
 
 class FDPParser:
@@ -67,23 +67,30 @@ class FDPParser:
                 if isinstance(org, str) and org.strip():
                     signals["infra_org"] = org.strip()
 
+        # 补算 CDN 标记：结构化字段本身不含此信号，从文本/组织名推断，
+        # 避免结构化成功时 is_cdn_ip 恒为 False 导致 agent CDN 误报抑制失效
+        signals["is_cdn_ip"] = compute_cdn_flag(text, signals.get("infra_org", ""))
         return signals
 
     def _parse_age(self, date_str: str) -> int | None:
-        """从日期字符串解析域名年龄（天数）。"""
-        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%dT%H:%M:%S"):
+        """从日期字符串解析域名年龄（天数）。
+
+        支持横线/斜杠分隔的日期及 ISO 8601 带时间格式。统一标准化为
+        横线分隔后按目标长度切片再 strptime，避免格式串长度与数据长度
+        不一致导致的解析失败。
+        """
+        if not date_str:
+            return None
+        s = date_str.strip()
+        # 统一斜杠 -> 横线，便于用同一组 fmt 解析
+        normalized = s.replace("/", "-")
+        for fmt, length in (("%Y-%m-%dT%H:%M:%S", 19), ("%Y-%m-%d", 10)):
             try:
-                clean = date_str.replace("/", "-")[:10] if fmt.startswith("%Y-%m-%d") else date_str
-                reg_date = datetime.strptime(clean[:len(fmt.replace("%", "0"))], fmt)
+                reg_date = datetime.strptime(normalized[:length], fmt)
                 return max((datetime.now() - reg_date).days, 0)
             except (ValueError, TypeError):
                 continue
-        # 试试只取前 10 个字符
-        try:
-            reg_date = datetime.strptime(date_str[:10], "%Y-%m-%d")
-            return max((datetime.now() - reg_date).days, 0)
-        except (ValueError, TypeError):
-            return None
+        return None
 
     def _extract_json(self, text: str) -> str | None:
         """从文本中提取最外层 JSON。"""

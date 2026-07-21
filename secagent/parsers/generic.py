@@ -49,6 +49,20 @@ def default_signals() -> dict[str, Any]:
     }
 
 
+def compute_cdn_flag(text: str, infra_org: str = "") -> bool:
+    """检测是否为 CDN/WAF 共享 IP。
+
+    综合原始文本与基础设施组织名判断：命中 CDN 关键词或降级摘要
+    ``cdn=yes`` 标记即判定为 True。供 per-server parser 结构化提取
+    成功后补算 ``is_cdn_ip``（结构化字段本身不含此信号），避免
+    结构化成功时该信号静默丢失导致 agent 的 CDN 误报抑制失效。
+    """
+    blob = ((text or "") + " " + (infra_org or "")).lower()
+    if any(kw in blob for kw in _CDN_KEYWORDS):
+        return True
+    return "cdn=yes" in blob
+
+
 def regex_fallback(text: str) -> dict[str, Any]:
     """用正则从文本中提取信号（通用 fallback 解析）。
 
@@ -118,9 +132,9 @@ def regex_fallback(text: str) -> dict[str, Any]:
         except (ValueError, TypeError):
             pass
 
-    # 6. CDN/WAF 共享 IP 检测
+    # 6. CDN/WAF 共享 IP 检测（复用公共函数，含降级 cdn=yes 标记）
     text_lower = text.lower()
-    is_cdn_ip = any(kw in text_lower for kw in _CDN_KEYWORDS)
+    is_cdn_ip = compute_cdn_flag(text, infra_org)
 
     # 7. 降级格式 key=value 兼容解析（保留，不删除）
     if "[已降级" in text or "[关键信号" in text:
@@ -151,8 +165,7 @@ def regex_fallback(text: str) -> dict[str, Any]:
                     confidence = float(m.group(1))
                 except ValueError:
                     pass
-        if not is_cdn_ip:
-            is_cdn_ip = "cdn=yes" in text_lower
+        # is_cdn_ip 已由 compute_cdn_flag 统一计算（含 cdn=yes 标记）
 
     signals["threat_labels"] = threat_labels
     signals["domain_age_days"] = domain_age_days

@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from secagent.parsers.generic import default_signals, regex_fallback, _RISK_CLASSES
+from secagent.parsers.generic import default_signals, regex_fallback, _RISK_CLASSES, compute_cdn_flag
 
 
 class CTIAParser:
@@ -62,7 +62,8 @@ class CTIAParser:
                 threat_labels.append(tags)
 
             classification = obj.get("classification", "")
-            if isinstance(classification, str) and classification.lower() not in _RISK_CLASSES:
+            if (isinstance(classification, str) and classification.strip()
+                    and classification.lower() not in _RISK_CLASSES):
                 threat_labels.append(classification)
 
             # 去重
@@ -76,6 +77,9 @@ class CTIAParser:
             if isinstance(conf, (int, float)):
                 signals["confidence"] = conf / 100.0 if conf > 1.0 else float(conf)
 
+            # 补算 CDN 标记：结构化字段不含此信号，从文本/组织名推断，
+            # 避免结构化成功时 is_cdn_ip 恒为 False 导致 agent CDN 误报抑制失效
+            signals["is_cdn_ip"] = compute_cdn_flag(text, signals.get("infra_org", ""))
             return signals
 
         return None

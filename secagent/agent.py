@@ -177,6 +177,16 @@ class SecurityAgent:
         finally:
             for name, level in saved_levels.items():
                 logging.getLogger(name).setLevel(level)
+        # 关闭 AsyncOpenAI 的 httpx 连接池，避免 serve 长期运行泄漏连接。
+        # 兼容测试 mock：close 可能不存在或返回非 awaitable，需分别判断。
+        try:
+            closer = getattr(self.llm_async, "close", None)
+            if closer is not None:
+                maybe_coro = closer()
+                if hasattr(maybe_coro, "__await__"):
+                    await maybe_coro
+        except Exception:
+            pass
         self._session_active = False
 
     def close(self) -> None:

@@ -412,3 +412,35 @@
 ## 阶段十七：改进路线图（文档）
 
 - 新增 `ROADMAP.md`：梳理 v0.8.0 之后尚未完成的改进点——P1 四项（per-server 结构化解析层、IOC 校验、工具去重与路由、评估框架）+ P2 五项（数据源覆盖度报告、相似案例检索注入、web_fetch 信任边界、成本预算护栏、结构化最终输出），每项含现状分析、具体修改方案、验收标准与里程碑建议（v0.9.0 / v0.10.0 / v1.0.0）。
+
+---
+
+## 阶段十八：结构化解析层与评估框架（v0.9.0 ~ v0.9.1）
+
+### v0.9.0: 评估框架 + web_fetch 信任边界
+- 新增 `eval.py` 评估框架：支持 online/replay 两种模式，回放历史会话验证 prompt/模型变更对结论一致性的影响。
+- `web_fetch.py` 增加内容信任边界 `_sanitize_untrusted`：抓取的网页内容注入 `<untrusted_web_content>` 包裹，注入行加 `[SANITIZED]` 前缀，防止网页内容伪装 system 指令。
+- 测试 +若干。
+
+### v0.9.1: 结构化解析层 + IOC 校验 + 覆盖度报告
+- 新增 `secagent/parsers/` 包：按 MCP server 分发结构化解析（CTIA/FDP），先 json.loads 按 schema 提取，失败回退 generic 正则。`extract_signals_with_sources` 通过 assistant 消息的 tool_calls 反查 server，实现 per-server 解析。
+- IOC 校验 `validate_iocs`：对提取的 IOC 做格式校验，区分 verified/unverified。
+- 覆盖度报告 `coverage`：标注哪些关键 server（CTIA/FDP/Hunter 等）已提供数据，缺失时压低独立评分置信度。
+- 信号来源标注：每个信号附带来源 server，便于复盘。
+
+---
+
+## 阶段十九：结构化解析层回归修复（v0.9.2）
+
+### v0.9.2: 修复 parsers 包引入的两个回归 + llm_async 资源泄漏
+
+**问题背景**：v0.9.1 引入的 per-server 结构化解析层本意"比 generic 正则更准"，但实际比正则更窄——结构化成功时不会回退 generic，而结构化只提取部分字段，导致两个信号静默丢失。代码审查发现后修复。
+
+**修复内容**：
+- **FDP 斜杠日期丢失 `domain_age_days`**（P1）：`parsers/fdp.py:_parse_age` 用 `len(fmt.replace("%","0"))` 计算切片长度，算的是格式串长度（7~8）而非日期数据长度（10），导致三个 `strptime` 分支都把日期切短必然失败，只有末尾兜底（仅 ISO 横线）生效。重写为标准化斜杠→横线后按目标长度切片，支持 `%Y-%m-%d` / `%Y/%m/%d` / `%Y-%m-%dT%H:%M:%S` 三种格式。
+- **per-server parser 丢失 `is_cdn_ip`**（P1）：FDP/CTIA 结构化成功只填部分字段，`is_cdn_ip` 恒为 `False`，而 generic 会从 `_CDN_KEYWORDS` 算。fallback 只在 JSON 解析失败时触发，部分提取不触发。后果：`agent.py` 的 CDN 误报抑制对 FDP 数据失效。修法：generic.py 抽出 `compute_cdn_flag(text, infra_org)` 公共函数，FDP/CTIA 结构化成功后调用它补算 `is_cdn_ip`，regex_fallback 也复用同一函数消除重复。
+- **`llm_async` 未关闭资源泄漏**（P2）：`AsyncOpenAI` 的 httpx 连接池在 `disconnect()` 里不释放，`serve` 长期运行泄漏连接。在 `disconnect()` 加 `await self.llm_async.close()`，兼容测试 mock（判断返回值是否 awaitable）。
+- **CTIA 空 classification 误当标签**（P3 顺手修）：空字符串不在 `_RISK_CLASSES` 集合，被当成威胁标签。加 `.strip()` 判空。
+- **新增 `tests/test_parsers.py`**（24 用例）：覆盖斜杠日期解析、结构化 is_cdn_ip 补算、compute_cdn_flag、结构化 vs generic 一致性、降级格式回退。这是 v0.9.1 两个回归能溜进来的根因——之前无 parser 专项测试。
+
+**测试**：全套 223 passed（+24），唯一失败仍是预存的 `test_web_fetch::test_fetch_invalid_host`（网络环境代理 502，与本次无关）。
