@@ -293,11 +293,13 @@ class SecurityAgent:
         ]
 
         tools_used: list[str] = []
+        degrade_reasons: list[str] = []
         final_output, msg, token_usage = await self._run_loop(
             messages, tool_defs, selected_model, on_tool_call,
             on_thinking=on_thinking,
             on_stream=on_stream,
             extra_tools_used=tools_used,
+            degrade_reasons=degrade_reasons,
             max_iterations=effective_max_iter,
         )
 
@@ -313,6 +315,7 @@ class SecurityAgent:
             llm_model=self.config.models.fast,
         )
         result.token_usage = token_usage
+        result.degrade_reasons = degrade_reasons
 
         # 独立风险评分：从工具返回中提取信号（按 server 分发到 per-server parser），
         # 用 compute_risk_score 交叉验证 LLM 判断
@@ -657,6 +660,7 @@ class SecurityAgent:
         on_thinking: Callable[[str], None] | None = None,
         on_stream: Callable[[str], None] | None = None,
         extra_tools_used: list[str] | None = None,
+        degrade_reasons: list[str] | None = None,
         max_iterations: int | None = None,
     ) -> tuple[str, Any, dict]:
         """执行 LLM tool-calling 循环。
@@ -669,6 +673,7 @@ class SecurityAgent:
             on_thinking: 思考过程回调
             on_stream: 流式输出回调（最终回复时逐块调用）
             extra_tools_used: 追加工具调用记录到这个列表
+            degrade_reasons: 追加降级原因到这个列表（如 LLM 降级、工具降级）
             max_iterations: 本轮循环的最大迭代数；None 则用 config 默认值
 
         Returns:
@@ -701,6 +706,8 @@ class SecurityAgent:
                         fallback_model, messages, tool_defs, on_stream=on_stream,
                     )
                     logger.info("降级到模型 %s 成功", fallback_model)
+                    if degrade_reasons is not None and fallback_model != model:
+                        degrade_reasons.append(f"LLM降级: {model} → {fallback_model}")
                 except Exception as e2:
                     _safe_err = redact_secrets(str(e2))
                     logger.error("LLM 调用重试失败 (迭代 %d): %s", iteration, _safe_err)

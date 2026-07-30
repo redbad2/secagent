@@ -58,9 +58,9 @@ echo ""
 echo "创建配置目录: $SECAGENT_HOME"
 mkdir -p "$SECAGENT_HOME"/{skills,memory,logs}
 
-# 6. 复制预置技能
-if [[ -d "$REPO_DIR/skills" ]]; then
-    cp -r "$REPO_DIR/skills/"* "$SECAGENT_HOME/skills/" 2>/dev/null || true
+# 6. 复制预置技能（技能已移入包内 secagent/skills/）
+if [[ -d "$REPO_DIR/secagent/skills" ]]; then
+    cp -r "$REPO_DIR/secagent/skills/"* "$SECAGENT_HOME/skills/" 2>/dev/null || true
     echo "已复制预置技能到 $SECAGENT_HOME/skills/"
 fi
 

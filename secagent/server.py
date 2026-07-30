@@ -40,6 +40,11 @@ def create_app() -> FastAPI:
     app = FastAPI(title="secagent API", description="CLI 安全分析 Agent HTTP API")
     agent = SecurityAgent(config)
 
+    @app.on_event("startup")
+    async def startup():
+        """启动时连接所有 MCP server（不区分 target_type）。"""
+        await agent.connect()
+
     # ------------------------------------------------------------------
     # 请求模型
     # ------------------------------------------------------------------
@@ -63,8 +68,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="target 不能为空")
         target_type = detect_target_type(req.target)
         try:
-            if not agent._connected:
-                await agent.connect(target_type=target_type, depth=req.depth)
             result = await agent.analyze(
                 req.target, depth=req.depth, interactive=False, batch=True,
             )
@@ -93,8 +96,6 @@ def create_app() -> FastAPI:
                     return {"target": t, "risk_level": "错误", "summary": str(e)[:100]}
 
         try:
-            if not agent._connected:
-                await agent.connect()
             tasks = [_one(t) for t in req.targets]
             results = await asyncio.gather(*tasks)
         except Exception as e:
@@ -149,8 +150,6 @@ def create_app() -> FastAPI:
                     logger.warning("监控扫描 %s 失败: %s", t, e)
 
         try:
-            if not agent._connected:
-                await agent.connect()
             await asyncio.gather(*[_scan(t) for t in targets])
         finally:
             await agent.disconnect()

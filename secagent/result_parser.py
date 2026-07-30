@@ -37,6 +37,8 @@ class AnalysisResult:
     unverified_iocs: list[dict] = field(default_factory=list)  # LLM 幻觉或未在工具返回中验证
     # 数据源覆盖度（P2-1）
     coverage: dict = field(default_factory=dict)  # {connected, failed, critical_failed, sources_with_signal}
+    # 降级原因（P0-3）：LLM 降级、工具降级等
+    degrade_reasons: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.timestamp:
@@ -65,6 +67,7 @@ class AnalysisResult:
             "verified_iocs": self.verified_iocs,
             "unverified_iocs": self.unverified_iocs,
             "coverage": self.coverage,
+            "degrade_reasons": self.degrade_reasons,
         }
 
     @staticmethod
@@ -96,6 +99,7 @@ class AnalysisResult:
             verified_iocs=data.get("verified_iocs", []),
             unverified_iocs=data.get("unverified_iocs", []),
             coverage=data.get("coverage", {}),
+            degrade_reasons=data.get("degrade_reasons", []),
             from_cache=True,
         )
 
