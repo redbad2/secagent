@@ -698,9 +698,38 @@ class SecurityAgent:
         final_output = ""
         total_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
+        budget_limit = self.config.budget_max_tokens
+        budget_warned = False
+
         while iteration < max_iterations:
             iteration += 1
             logger.debug("Agent 循环 - 迭代 %d/%d", iteration, max_iterations)
+
+            # P2-1 成本预算护栏：检查是否超限
+            if budget_limit > 0:
+                used_pct = total_usage["total_tokens"] / budget_limit * 100
+                if used_pct >= 100:
+                    logger.warning("Token 预算超限 (%d/%d)，强制结束",
+                                   total_usage["total_tokens"], budget_limit)
+                    if degrade_reasons is not None:
+                        degrade_reasons.append(
+                            f"Token预算超限: {total_usage['total_tokens']}/{budget_limit}"
+                        )
+                    final_output = await self._salvage_final_output(
+                        messages, model, msg, total_usage, on_stream=on_stream,
+                    )
+                    break
+                elif used_pct >= 80 and not budget_warned:
+                    logger.warning("Token 预算已达 80% (%d/%d)，请尽快给出结论",
+                                   total_usage["total_tokens"], budget_limit)
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            f"Token 预算已达 80% ({total_usage['total_tokens']}/{budget_limit})。"
+                            "请基于已有数据立即给出最终分析结论，不要再调用工具。"
+                        ),
+                    })
+                    budget_warned = True
 
             try:
                 content_buf, reasoning_buf, tool_calls, usage = await self._stream_completion(

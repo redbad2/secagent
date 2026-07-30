@@ -94,31 +94,5 @@ class FDPParser:
 
     def _extract_json(self, text: str) -> str | None:
         """从文本中提取最外层 JSON。"""
-        for i, ch in enumerate(text):
-            if ch in "{[":
-                open_ch = ch
-                close_ch = "}" if ch == "{" else "]"
-                depth = 0
-                in_str = False
-                escape = False
-                for j in range(i, len(text)):
-                    c = text[j]
-                    if escape:
-                        escape = False
-                        continue
-                    if c == "\\":
-                        escape = True
-                        continue
-                    if c == '"':
-                        in_str = not in_str
-                        continue
-                    if in_str:
-                        continue
-                    if c == open_ch:
-                        depth += 1
-                    elif c == close_ch:
-                        depth -= 1
-                        if depth == 0:
-                            return text[i:j + 1]
-                break
-        return None
+        from secagent.parsers.generic import extract_json
+        return extract_json(text)

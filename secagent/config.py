@@ -165,6 +165,8 @@ class AgentConfig:
     tool_output_limit: int = 1500   # 单条工具返回裁剪阈值（字符）
     window_rounds: int = 3          # 滑窗保留最近几轮完整
     window_trigger: int = 12        # tool 消息数超过此值开始降级
+    # 成本预算护栏
+    budget_max_tokens: int = 0      # 单次分析最大 token 数（0=不限）
 
 
 def _load_dotenv(env_path: Path) -> dict[str, str]:
@@ -315,6 +317,9 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
     if skills_llm_create not in ("off", "quarantine", "on"):
         skills_llm_create = "quarantine"
 
+    # 12. 成本预算护栏
+    budget_max_tokens = int(yaml_data.get("budget", {}).get("max_tokens_per_analysis", 0))
+
     return AgentConfig(
         llm=llm,
         models=models,
@@ -331,6 +336,7 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         window_rounds=window_rounds,
         window_trigger=window_trigger,
         skills_llm_create=skills_llm_create,
+        budget_max_tokens=budget_max_tokens,
     )
 
 

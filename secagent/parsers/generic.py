@@ -63,6 +63,41 @@ def compute_cdn_flag(text: str, infra_org: str = "") -> bool:
     return "cdn=yes" in blob
 
 
+def extract_json(text: str) -> str | None:
+    """从文本中提取最外层 JSON 对象或数组。
+
+    供 per-server parser 复用，避免重复实现。
+    """
+    for i, ch in enumerate(text):
+        if ch in "{[":
+            open_ch = ch
+            close_ch = "}" if ch == "{" else "]"
+            depth = 0
+            in_str = False
+            escape = False
+            for j in range(i, len(text)):
+                c = text[j]
+                if escape:
+                    escape = False
+                    continue
+                if c == "\\":
+                    escape = True
+                    continue
+                if c == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if c == open_ch:
+                    depth += 1
+                elif c == close_ch:
+                    depth -= 1
+                    if depth == 0:
+                        return text[i:j + 1]
+            break
+    return None
+
+
 def regex_fallback(text: str) -> dict[str, Any]:
     """用正则从文本中提取信号（通用 fallback 解析）。
 

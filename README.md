@@ -128,6 +128,7 @@ secagent config export                    # 导出配置（含 API key，0o600 �
 secagent config reload                    # 热重载配置文件
 secagent status                           # MCP 服务器健康检查
 secagent serve [--host HOST] [--port PORT] # 启动 HTTP API 服务
+secagent eval [--dataset FILE] [--online] [--save-baseline] [--check-baseline]  # 分析质量评估
 secagent --version                        # 显示版本
 secagent update                           # 升级 secagent
 ```
@@ -333,6 +334,40 @@ pipx install git+https://github.com/redbad2/secagent.git
 
 ```bash
 secagent update
+```
+
+## 分析质量评估
+
+`secagent eval` 用于评估分析结果的质量，支持回放模式和在线模式。
+
+```bash
+# 回放模式：用缓存的工具返回重跑分析（快速、免费）
+secagent eval --dataset tests/eval/dataset.yaml
+
+# 在线模式：实时调用 MCP server 分析（慢、消耗配额）
+secagent eval --dataset tests/eval/dataset.yaml --online
+
+# 保存当前结果为 baseline（供后续对比）
+secagent eval --dataset tests/eval/dataset.yaml --save-baseline
+
+# 检查当前结果是否退化（与 baseline 对比）
+secagent eval --dataset tests/eval/dataset.yaml --check-baseline
+```
+
+**回放 vs 在线模式**：
+- **回放模式**：从结果缓存中提取工具返回，用当前代码重跑分析链。适合验证 prompt/评分权重改动的影响。
+- **在线模式**：实时调用 MCP server。适合验证端到端功能。
+
+**Baseline 工作流**：
+1. 代码改动前：`secagent eval --save-baseline` 保存基线
+2. 代码改动后：`secagent eval --check-baseline` 检查是否退化
+
+**数据集格式**（`tests/eval/dataset.yaml`）：
+```yaml
+- target: "example.com"
+  target_type: "domain"
+  expected_risk: "高"
+  expected_iocs: ["192.0.2.1"]
 ```
 
 ## 测试
