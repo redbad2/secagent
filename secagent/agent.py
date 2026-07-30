@@ -548,23 +548,32 @@ class SecurityAgent:
         messages: list[dict[str, Any]],
         tool_defs: list[dict[str, Any]] | None,
         on_stream: Callable[[str], None] | None = None,
+        response_format: dict[str, str] | None = None,
     ) -> tuple[str, str, list[dict[str, str]], dict]:
         """发起一次流式补全（异步客户端）并读取完整响应。
+
+        Args:
+            response_format: 可选，强制输出格式如 {"type": "json_object"}
 
         Returns:
             (content, reasoning_content, tool_calls, usage)
             tool_calls: [{"id": str, "name": str, "arguments": str}]
             usage: {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
         """
-        response = await self.llm_async.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tool_defs if tool_defs else None,
-            temperature=self.config.llm.temperature,
-            max_tokens=self.config.llm.max_tokens,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": self.config.llm.temperature,
+            "max_tokens": self.config.llm.max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tool_defs:
+            kwargs["tools"] = tool_defs
+        if response_format:
+            kwargs["response_format"] = response_format
+
+        response = await self.llm_async.chat.completions.create(**kwargs)
 
         content_buf = ""
         reasoning_buf = ""
@@ -757,7 +766,30 @@ class SecurityAgent:
             messages.append(assistant_msg)
 
             if not msg.tool_calls:
-                final_output = content_buf
+                # 收敛轮：无 tool_calls 且已有工具数据时，尝试结构化输出
+                if iteration >= 2 and content_buf.strip():
+                    try:
+                        structured_content, _, _, structured_usage = await self._stream_completion(
+                            model, messages, None,
+                            on_stream=None,  # 结构化补全不流式输出（避免打断用户）
+                            response_format={"type": "json_object"},
+                        )
+                        for k in total_usage:
+                            total_usage[k] += structured_usage[k]
+                        if structured_content.strip():
+                            # 用结构化输出替换自然语言回复
+                            final_output = structured_content
+                            logger.info("结构化输出成功 (json_object)")
+                        else:
+                            final_output = content_buf
+                    except Exception as e:
+                        # 端点不支持 json_object（如某些 OpenAI-compatible 服务）
+                        logger.warning("结构化输出失败，回落到自然语言解析: %s", redact_secrets(str(e)))
+                        if degrade_reasons is not None:
+                            degrade_reasons.append(f"结构化输出失败: {redact_secrets(str(e))[:50]}")
+                        final_output = content_buf
+                else:
+                    final_output = content_buf
                 break
 
             # 并行执行工具调用
