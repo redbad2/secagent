@@ -407,22 +407,21 @@ class SecurityAgent:
         except Exception as e:
             logger.warning("会话存档失败: %s", e)
 
-        # 事后学习（批量模式跳过）。同步函数（内部可能同步调 LLM 提炼技能），
-        # 放 worker 线程执行，避免阻塞事件循环
-        learning_actions = []
-        if not batch:
-            learning_actions = await asyncio.to_thread(
-                self._post_analyze_learning,
-                target=target,
-                target_type=target_type,
-                result=result,
-                messages=messages,
-                tools_used=tools_used,
-                interactive=interactive,
-                confirm_fn=confirm_fn,
-            )
-            if learning_actions and on_learning:
-                on_learning(learning_actions)
+        # 事后学习（P2-4：batch 模式也执行，但只写记忆不创建技能）。
+        # 同步函数（内部可能同步调 LLM 提炼技能），放 worker 线程执行，避免阻塞事件循环
+        learning_actions = await asyncio.to_thread(
+            self._post_analyze_learning,
+            target=target,
+            target_type=target_type,
+            result=result,
+            messages=messages,
+            tools_used=tools_used,
+            interactive=interactive and not batch,  # batch 模式强制非交互
+            confirm_fn=confirm_fn if not batch else None,  # batch 模式不询问
+            batch=batch,
+        )
+        if learning_actions and on_learning and not batch:
+            on_learning(learning_actions)
 
         # 写入结果缓存（成功的分析结果，供后续 --reuse 命中）
         if self.cache is not None:
@@ -971,8 +970,13 @@ class SecurityAgent:
         tools_used: list[str],
         interactive: bool = True,
         confirm_fn: Callable[[str], bool] | None = None,
+        batch: bool = False,
     ) -> list[str]:
-        """事后学习：评估是否创建技能、更新记忆。"""
+        """事后学习：评估是否创建技能、更新记忆。
+
+        Args:
+            batch: True 时跳过技能创建（只写记忆），避免 batch 并发冲突。
+        """
         try:
             assessment = self.learning.assess(
                 target=target,
@@ -982,6 +986,10 @@ class SecurityAgent:
                 tools_used=tools_used,
                 interactive=interactive,
             )
+
+            # P2-4：batch 模式跳过技能创建，只写记忆
+            if batch:
+                assessment.should_create_skill = False
 
             actions = self.learning.apply(
                 assessment,
