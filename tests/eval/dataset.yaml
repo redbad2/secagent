@@ -12,6 +12,8 @@
 #   borderline     边界样本（CDN 共享 IP / 低流量新注册），用于检验误报抑制
 #
 # 注意：在线评估会真实调用 MCP 与 LLM，消耗配额；回放模式用 fixture 替代。
+# fixture 生成：secagent eval --online --save-fixtures（写入 tests/eval/fixtures/）。
+# 回放：secagent eval（读取 fixture 字段指定的文件，默认 <target>.json）。
 # 数据集应随真实案例积累持续扩充。以下为初始基线样本。
 
 version: 1
@@ -22,31 +24,37 @@ samples:
   - target: "cloudflare.windowsupdatedns.site"
     expected_risk_level: ["高", "严重"]
     category: malicious
+    fixture: "cloudflare.windowsupdatedns.site.json"
     note: "Chrome 品牌仿冒钓鱼 + Cobalt Strike C2（历史真实案例）"
 
   - target: "cn-chrome-chrome-cn.hl.cn"
     expected_risk_level: ["高", "严重"]
     category: malicious
+    fixture: "cn-chrome-chrome-cn.hl.cn.json"
     note: "Chrome 品牌仿冒钓鱼站点（历史真实案例）"
 
   # === 已知良性样本 ===
   - target: "baidu.com"
     expected_risk_level: "低"
     category: benign
+    fixture: "baidu.com.json"
     note: "高流行度 + ICP 备案，典型良性域名"
 
   - target: "qq.com"
     expected_risk_level: "低"
     category: benign
+    fixture: "qq.com.json"
     note: "高流行度 + ICP 备案，典型良性域名"
 
   - target: "8.8.8.8"
     expected_risk_level: "低"
     category: benign
+    fixture: "8.8.8.8.json"
     note: "Google 公共 DNS，典型良性 IP"
 
   # === 边界样本（检验误报抑制） ===
   - target: "www.cloudflare.com"
     expected_risk_level: "低"
     category: borderline
+    fixture: "www.cloudflare.com.json"
     note: "CDN 厂商自身域名，解析到 CDN 共享 IP，应判定良性"

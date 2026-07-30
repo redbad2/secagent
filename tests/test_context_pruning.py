@@ -137,14 +137,16 @@ class TestExtractSignalsMerged:
         assert len(sig["threat_labels"]) == 1
 
     def test_merge_min_domain_age(self):
+        from datetime import datetime, timedelta
+        recent = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         msgs = [
             {"role": "tool", "content": '{"creation_date": "2020-01-01"}'},  # 老
-            {"role": "tool", "content": '{"creation_date": "2026-07-10"}'},  # 新（更年轻）
+            {"role": "tool", "content": f'{{"creation_date": "{recent}"}}'},  # 新（更年轻）
         ]
         sig = extract_signals(msgs)
         # 取最小值（最年轻域名，风险最高）
         assert sig["domain_age_days"] is not None
-        assert sig["domain_age_days"] < 20  # 7月10日注册，距今几天
+        assert sig["domain_age_days"] < 20  # 5 天前注册，距今几天
 
     def test_merge_any_icp(self):
         msgs = [

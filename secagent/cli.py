@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import threading
 from concurrent.futures import CancelledError
@@ -1232,21 +1233,25 @@ def cmd_update():
 
 
 def cmd_eval(agent, dataset_path: str = "", online: bool = False,
-             save_baseline: bool = False):
+             save_baseline: bool = False, save_fixtures: bool = False):
     """分析质量评估。"""
     from secagent.eval import run_eval, save_baseline as save_bl, compare_baseline, \
         DEFAULT_DATASET, BASELINE_PATH
 
     ds = Path(dataset_path) if dataset_path else None
     console.print(f"\n[bold cyan]分析质量评估[/bold cyan]")
-    mode_label = "在线（真实调用）" if online else "回放（优先缓存）"
+    mode_label = "在线（真实调用）" if online else "回放（fixture）"
     console.print(f"[dim]模式: {mode_label} | 数据集: {ds or DEFAULT_DATASET}[/dim]\n")
 
     async def _run():
-        return await run_eval(agent, dataset_path=ds, online=online)
+        return await run_eval(agent, dataset_path=ds, online=online,
+                              save_fixtures=save_fixtures)
+
+    if save_fixtures and not online:
+        console.print("[yellow]--save-fixtures 仅在线模式生效，本次忽略[/yellow]")
 
     try:
-        report = asyncio.run(asyncio.wait_for(_run(), timeout=1800 if online else 60))
+        report = asyncio.run(asyncio.wait_for(_run(), timeout=1800 if online else 900))
     except asyncio.TimeoutError:
         console.print("[red]评估超时[/red]\n")
         return
@@ -1714,9 +1719,13 @@ def main():
     p_eval = subparsers.add_parser("eval", help="分析质量评估")
     p_eval.add_argument("--dataset", help="自定义数据集 YAML 路径")
     p_eval.add_argument("--online", action="store_true",
-                        help="在线模式（真实调 LLM+MCP，消耗配额；默认回放缓存）")
+                        help="在线模式（真实调 LLM+MCP，消耗配额；默认 fixture 回放）")
+    p_eval.add_argument("--save-fixtures", action="store_true",
+                        help="在线模式下把每样本的工具返回保存为回放 fixture")
     p_eval.add_argument("--save-baseline", action="store_true",
                         help="结果写入 baseline.json 作为回归基线")
+    p_eval.add_argument("--check-baseline", action="store_true",
+                        help="与 baseline.json 对比检查退化（默认行为，可显式指定）")
 
     args = parser.parse_args()
 
@@ -1823,7 +1832,8 @@ def main():
     elif args.command == "eval":
         cmd_eval(agent, getattr(args, "dataset", "") or "",
                  online=getattr(args, "online", False),
-                 save_baseline=getattr(args, "save_baseline", False))
+                 save_baseline=getattr(args, "save_baseline", False),
+                 save_fixtures=getattr(args, "save_fixtures", False))
         agent.close()
         return
 

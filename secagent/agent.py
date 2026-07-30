@@ -42,7 +42,8 @@ class SecurityAgent:
             base_url=config.llm.base_url,
             api_key=config.llm.api_key,
         )
-        self.mcp = MCPManager(config.mcp_servers, tool_output_limit=config.tool_output_limit)
+        self.mcp = MCPManager(config.mcp_servers, tool_output_limit=config.tool_output_limit,
+                              tool_routing=config.tool_routing)
 
         # LLM 辅助函数：用于记忆压缩和技能提取
         def _llm_chat(system_prompt: str, user_prompt: str) -> str:
@@ -86,6 +87,9 @@ class SecurityAgent:
         self._session_tool_defs: list[dict[str, Any]] = []
         self._session_model: str = ""
         self._session_max_iter: int = 10
+        # 调用级去重缓存（P1-2）：(tool_name, canonical_args) -> 返回内容
+        # 每次 analyze 开始清空，会话追问（ask）期间保留
+        self._call_cache: dict[tuple[str, str], str] = {}
 
         # 注入 save_skill 内置工具，让 LLM 可以在分析中保存技能
         import secagent.web_fetch as _wf
@@ -286,7 +290,10 @@ class SecurityAgent:
             tool_servers = connected_servers
         else:
             tool_servers = connected_servers - OPTIONAL_SERVERS
-        tool_defs = self.mcp.get_tool_definitions(server_filter=tool_servers)
+        tool_defs = self.mcp.get_tool_definitions(
+            server_filter=tool_servers,
+            open_all_capabilities=(depth == "deep"),  # deep 放开能力路由全组
+        )
         if not tool_defs:
             logger.warning("没有可用的 MCP 工具，LLM 将仅基于自身知识分析")
 
@@ -316,6 +323,7 @@ class SecurityAgent:
 
         tools_used: list[str] = []
         degrade_reasons: list[str] = []
+        self._call_cache.clear()  # P1-2：新分析清空调用级去重缓存
         final_output, msg, token_usage = await self._run_loop(
             messages, tool_defs, selected_model, on_tool_call,
             on_thinking=on_thinking,
@@ -323,6 +331,7 @@ class SecurityAgent:
             extra_tools_used=tools_used,
             degrade_reasons=degrade_reasons,
             max_iterations=effective_max_iter,
+            structured_final=True,
         )
 
         # 解析结果（同步函数，fallback 路径会同步调 LLM，
@@ -692,6 +701,7 @@ class SecurityAgent:
         extra_tools_used: list[str] | None = None,
         degrade_reasons: list[str] | None = None,
         max_iterations: int | None = None,
+        structured_final: bool = False,
     ) -> tuple[str, Any, dict]:
         """执行 LLM tool-calling 循环。
 
@@ -705,6 +715,8 @@ class SecurityAgent:
             extra_tools_used: 追加工具调用记录到这个列表
             degrade_reasons: 追加降级原因到这个列表（如 LLM 降级、工具降级）
             max_iterations: 本轮循环的最大迭代数；None 则用 config 默认值
+            structured_final: 收敛轮是否用 response_format=json_object 强制
+                结构化结论输出（仅 analyze 的最终结论开启；追问保持自然语言）
 
         Returns:
             (final_output, last_message, token_usage)
@@ -816,8 +828,18 @@ class SecurityAgent:
             messages.append(assistant_msg)
 
             if not msg.tool_calls:
-                # 收敛轮：无 tool_calls 且已有工具数据时，尝试结构化输出
-                if iteration >= 2 and content_buf.strip():
+                # P1-3 收敛轮结构化输出：已有工具数据时，用 json_object 强制结论
+                # JSON 替换自然语言回复；端点不支持时回落现有正则解析路径
+                if structured_final and iteration >= 2 and content_buf.strip():
+                    instruction = {
+                        "role": "user",
+                        "content": (
+                            "请基于以上分析，仅输出最终结论 JSON，不要输出任何其他内容。"
+                            "JSON 格式：{risk_level, confidence, findings, evidence_chain, "
+                            "iocs, summary, recommendation}"
+                        ),
+                    }
+                    messages.append(instruction)
                     try:
                         structured_content, _, _, structured_usage = await self._stream_completion(
                             model, messages, None,
@@ -838,6 +860,8 @@ class SecurityAgent:
                         if degrade_reasons is not None:
                             degrade_reasons.append(f"结构化输出失败: {redact_secrets(str(e))[:50]}")
                         final_output = content_buf
+                    finally:
+                        messages.pop()  # 指令仅本次补全有效，不留在会话历史
                 else:
                     final_output = content_buf
                 break
@@ -875,7 +899,7 @@ class SecurityAgent:
                             return f"[工具调用失败] {type(e).__name__}: {e}"
                     tool_tasks.append(_safe_builtin())
                 else:
-                    tool_tasks.append(self._call_tool_with_retry(tool_name, args))
+                    tool_tasks.append(self._call_tool_dedup(tool_name, args))
 
             results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
@@ -910,6 +934,21 @@ class SecurityAgent:
             )
 
         return final_output, msg, total_usage
+
+    async def _call_tool_dedup(self, tool_name: str, args: dict) -> Any:
+        """调用级去重（P1-2）：相同工具+相同参数的重复调用直接命中缓存，
+        不产生第二次 RPC；命中内容追加 (cached) 标注。"""
+        try:
+            key = (tool_name, json.dumps(args, sort_keys=True, ensure_ascii=False))
+        except (TypeError, ValueError):
+            key = (tool_name, str(args))
+        if key in self._call_cache:
+            logger.info("工具 %s 重复调用，命中缓存（跳过 RPC）", tool_name)
+            return f"{self._call_cache[key]}\n(cached: 与上次相同参数的调用结果一致，未重复查询)"
+        # 失败会抛异常（由上层按失败处理），不会进入缓存
+        result = await self._call_tool_with_retry(tool_name, args)
+        self._call_cache[key] = str(result)
+        return result
 
     async def _call_tool_with_retry(self, tool_name: str, args: dict, max_retries: int = 2) -> Any:
         """调用 MCP 工具，失败时自动重试。"""

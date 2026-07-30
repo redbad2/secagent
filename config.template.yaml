@@ -114,3 +114,10 @@ context:
 # LLM 通过 save_skill 工具自动创建技能的策略
 skills:
   llm_create: "quarantine"    # off=禁止 | quarantine=保存但禁用待人工审核（默认） | on=直接启用
+
+# === 工具路由（可选）===
+# 能力组 → server 优先级。同能力组默认只暴露最高优先级可用 server 的工具，
+# 首选连接失败时回退组内下一个；deep 深度放开全组。不配置则用内置默认值。
+# tool_routing:
+#   domain_threat_intel: [ctia_domain, qianxin_fdp_domain]
+#   ip_threat_intel: [ctia_ip, qianxin_fdp_ip, iporg]

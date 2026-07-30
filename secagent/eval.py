@@ -1,9 +1,12 @@
 """评估框架：对分析质量做回归基线。
 
 两种模式：
-- 回放模式（默认）：优先用 ResultCache（--reuse）命中已存结果，避免重复烧 token；
-  缓存未命中的样本标记为 SKIP（需先在线跑一轮填充缓存）。
-- 在线模式（--online）：真实跑完整 analyze 链（连 MCP + 调 LLM），消耗配额。
+- 回放模式（默认，P1-1）：用 fixture（tests/eval/fixtures/<target>.json）中
+  存档的工具返回替代真实 MCP 调用，LLM 调用、信号提取、双轨评分全部走当前
+  代码——prompt/评分权重改动会直接反映在回放结果里。无 fixture 的样本标记 SKIP。
+  设 SECAGENT_EVAL_FAKE_LLM=1 可用脚本化假 LLM 做离线纯逻辑冒烟。
+- 在线模式（--online）：真实跑完整 analyze 链（连 MCP + 调 LLM），消耗配额；
+  配合 --save-fixtures 把本轮工具返回存为 fixture 供后续回放。
 
 指标：
 - 命中率：实际 risk_level 在 expected_risk_level（支持多档允许偏差）内
@@ -13,8 +16,9 @@
 - 平均工具调用数 / 平均 token 成本
 
 用法：
-    secagent eval                         # 回放模式，用默认数据集
-    secagent eval --online                # 在线模式（消耗配额，填充缓存）
+    secagent eval                         # 回放模式，用默认数据集 + fixture
+    secagent eval --online                # 在线模式（消耗配额）
+    secagent eval --online --save-fixtures  # 在线跑一轮并生成回放 fixture
     secagent eval --dataset my.yaml       # 自定义数据集
     secagent eval --save-baseline         # 结果写入 baseline.json 作为回归基线
 """
@@ -24,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +36,10 @@ from typing import Any
 
 import yaml
 
+from secagent.eval_replay import (
+    DEFAULT_FIXTURES_DIR, ReplayableMCP, ScriptedAsyncLLM, ScriptedSyncLLM,
+    load_fixture, save_fixture,
+)
 from secagent.result_parser import RISK_LEVELS
 
 logger = logging.getLogger(__name__)
@@ -52,7 +61,7 @@ class SampleResult:
     actual: str                # 实际 risk_level，SKIP 表示未跑
     actual_independent: str    # 独立评分 risk_level
     hit: bool                  # 是否命中期望
-    skipped: bool = False      # 回放模式缓存未命中
+    skipped: bool = False      # 回放模式 fixture 缺失
     tools_used: int = 0
     tokens: int = 0
     discrepancy: str = ""      # 双轨分歧描述
@@ -142,29 +151,90 @@ def _classify_error(sample_cat: str, actual: str) -> str:
     return ""
 
 
-async def _eval_one(agent, sample: dict[str, Any], online: bool) -> SampleResult:
+def _result_to_sample(target: str, category: str, expected: str | list[str],
+                      result: Any) -> SampleResult:
+    """把 AnalysisResult 转为 SampleResult。"""
+    actual = result.risk_level
+    return SampleResult(
+        target=target, category=category, expected=expected,
+        actual=actual,
+        actual_independent=result.independent_risk_level or "未知",
+        hit=_is_hit(actual, expected), skipped=False,
+        tools_used=len(result.tools_used),
+        tokens=(result.token_usage or {}).get("total_tokens", 0),
+        discrepancy=result.risk_discrepancy or "",
+    )
+
+
+async def _eval_one_replay(agent, sample: dict[str, Any],
+                           fixtures_dir: Path) -> SampleResult:
+    """回放模式评估：fixture 替代 MCP，LLM/信号提取/双轨评分走当前代码。"""
+    target = sample["target"]
+    expected = sample.get("expected_risk_level", sample.get("expected", "未知"))
+    category = sample.get("category", "unknown")
+
+    fixture = load_fixture(fixtures_dir, sample)
+    if fixture is None:
+        logger.info("样本 %s 无 fixture，跳过（先跑 --online --save-fixtures 生成）", target)
+        return SampleResult(
+            target=target, category=category, expected=expected,
+            actual="SKIP", actual_independent="SKIP", hit=False, skipped=True,
+        )
+
+    fake_llm = os.environ.get("SECAGENT_EVAL_FAKE_LLM") == "1"
+    # 换入回放 MCP（可选脚本化假 LLM），跑完后恢复
+    saved = (agent.mcp, agent._connected, agent.llm, agent.llm_async)
+    agent.mcp = ReplayableMCP(fixture)
+    agent._connected = True  # 跳过 analyze 内的 connect
+    if fake_llm:
+        agent.llm_async = ScriptedAsyncLLM(fixture.get("tool_calls", []))
+        agent.llm = ScriptedSyncLLM()
+    try:
+        result = await agent.analyze(
+            target, depth="standard", interactive=False, batch=True,
+        )
+        return _result_to_sample(target, category, expected, result)
+    except Exception as e:
+        logger.warning("回放评估样本 %s 失败: %s", target, e)
+        return SampleResult(
+            target=target, category=category, expected=expected,
+            actual="错误", actual_independent="错误", hit=False,
+        )
+    finally:
+        agent.mcp, agent._connected, agent.llm, agent.llm_async = saved
+
+
+def _save_fixture_for(agent, target: str, target_type: str,
+                      fixtures_dir: Path) -> None:
+    """在线分析后，从会话存档提取工具返回并保存为 fixture。"""
+    session = agent.sessions.get_session(target)
+    if not session:
+        logger.warning("无法保存 fixture：未找到 %s 的会话存档", target)
+        return
+    messages = session["messages"]
+    if isinstance(messages, str):
+        messages = json.loads(messages)
+    n = save_fixture(fixtures_dir / f"{target}.json", target, target_type, messages)
+    logger.info("fixture 已保存: %s (%d 条工具返回)", target, n)
+
+
+async def _eval_one(agent, sample: dict[str, Any], online: bool,
+                    fixtures_dir: Path, save_fixtures: bool = False) -> SampleResult:
     """评估单个样本。"""
     target = sample["target"]
     expected = sample.get("expected_risk_level", sample.get("expected", "未知"))
     category = sample.get("category", "unknown")
 
+    if not online:
+        return await _eval_one_replay(agent, sample, fixtures_dir)
+
     try:
         result = await agent.analyze(
-            target, depth="standard", interactive=False,
-            batch=True, reuse=not online,
+            target, depth="standard", interactive=False, batch=True,
         )
-        actual = result.risk_level
-        actual_ind = result.independent_risk_level or "未知"
-        tools = len(result.tools_used)
-        tokens = (result.token_usage or {}).get("total_tokens", 0)
-        discrepancy = result.risk_discrepancy or ""
-        hit = _is_hit(actual, expected)
-        return SampleResult(
-            target=target, category=category, expected=expected,
-            actual=actual, actual_independent=actual_ind,
-            hit=hit, skipped=False,
-            tools_used=tools, tokens=tokens, discrepancy=discrepancy,
-        )
+        if save_fixtures:
+            _save_fixture_for(agent, target, result.target_type, fixtures_dir)
+        return _result_to_sample(target, category, expected, result)
     except Exception as e:
         logger.warning("评估样本 %s 失败: %s", target, e)
         return SampleResult(
@@ -175,12 +245,21 @@ async def _eval_one(agent, sample: dict[str, Any], online: bool) -> SampleResult
 
 
 async def run_eval(agent, dataset_path: Path | None = None,
-                   online: bool = False) -> EvalReport:
-    """执行一轮评估，返回报告。"""
+                   online: bool = False,
+                   fixtures_dir: Path | None = None,
+                   save_fixtures: bool = False) -> EvalReport:
+    """执行一轮评估，返回报告。
+
+    Args:
+        online: True=在线模式（真实 MCP+LLM）；False=回放模式（fixture）
+        fixtures_dir: fixture 目录，默认 tests/eval/fixtures
+        save_fixtures: 在线模式下把每样本的工具返回保存为 fixture
+    """
     samples = load_dataset(dataset_path)
+    fixtures_dir = fixtures_dir or DEFAULT_FIXTURES_DIR
     report = EvalReport(mode="online" if online else "replay", total=len(samples))
 
-    # 在线模式需要连接 MCP；回放模式若全部命中缓存则无需连接
+    # 在线模式需要连接 MCP；回放模式用 fixture 替代，无需连接
     connected = False
     if online:
         await agent.connect()
@@ -188,14 +267,8 @@ async def run_eval(agent, dataset_path: Path | None = None,
 
     try:
         for sample in samples:
-            sr = await _eval_one(agent, sample, online)
+            sr = await _eval_one(agent, sample, online, fixtures_dir, save_fixtures)
             report.samples.append(sr)
-
-            # 回放模式：缓存未命中时 actual 为空或错误，标记 skip
-            if not online and (sr.actual in ("未知", "错误") or sr.tokens == 0):
-                # 判断是否真的缓存命中：reuse 模式命中时 from_cache=True
-                # _eval_one 里没直接传 from_cache，靠 tokens==0 + actual 为默认值判断
-                pass  # 命中判定已在 hit 里处理，skip 在下面统计
 
         # 汇总指标
         evaluated = 0
@@ -208,8 +281,7 @@ async def run_eval(agent, dataset_path: Path | None = None,
         discrepancy_count = 0
 
         for sr in report.samples:
-            # 回放模式下，缓存未命中的样本 actual 可能为"未知"
-            if not online and sr.actual in ("未知", "错误"):
+            if sr.skipped:
                 skipped += 1
                 continue
             evaluated += 1

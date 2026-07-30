@@ -103,11 +103,12 @@ class TestEvalReport:
 
 class TestRunEval:
     @pytest.mark.asyncio
-    async def test_replay_mode_all_cached(self):
-        """回放模式：缓存全部命中。"""
+    async def test_online_mode_basic(self):
+        """在线模式：mock agent 直接返回结果。"""
         agent = MagicMock()
+        agent.connect = AsyncMock()
+        agent.disconnect = AsyncMock()
         agent.analyze = AsyncMock()
-        # 模拟缓存命中：返回带 token_usage 的结果
         agent.analyze.side_effect = [
             AnalysisResult(target="a.com", target_type="domain", risk_level="高",
                            token_usage={"total_tokens": 1000}),
@@ -124,7 +125,7 @@ class TestRunEval:
             ]
         }))
         try:
-            report = await run_eval(agent, dataset_path=tmp, online=False)
+            report = await run_eval(agent, dataset_path=tmp, online=True)
             assert report.total == 2
             assert report.passed == 2
             assert report.hit_rate == 1.0
@@ -133,9 +134,32 @@ class TestRunEval:
             tmp.unlink()
 
     @pytest.mark.asyncio
+    async def test_replay_mode_missing_fixture_skips(self):
+        """回放模式：fixture 缺失的样本标记为 skipped，不调用 analyze。"""
+        agent = MagicMock()
+        agent.analyze = AsyncMock()
+        import tempfile, yaml
+        tmp = Path(tempfile.mktemp(suffix=".yaml"))
+        tmp.write_text(yaml.dump({
+            "samples": [
+                {"target": "a.com", "expected_risk_level": ["高", "严重"], "category": "malicious"},
+            ]
+        }))
+        try:
+            report = await run_eval(agent, dataset_path=tmp, online=False,
+                                    fixtures_dir=Path("/nonexistent/fixtures"))
+            assert report.total == 1
+            assert report.skipped == 1
+            agent.analyze.assert_not_called()
+        finally:
+            tmp.unlink()
+
+    @pytest.mark.asyncio
     async def test_false_positive_detection(self):
         """良性样本被判恶意 → 误报。"""
         agent = MagicMock()
+        agent.connect = AsyncMock()
+        agent.disconnect = AsyncMock()
         agent.analyze = AsyncMock(return_value=AnalysisResult(
             target="good.com", target_type="domain", risk_level="高",
             token_usage={"total_tokens": 500},
@@ -148,7 +172,7 @@ class TestRunEval:
             ]
         }))
         try:
-            report = await run_eval(agent, dataset_path=tmp, online=False)
+            report = await run_eval(agent, dataset_path=tmp, online=True)
             assert report.passed == 0
             assert report.false_positive == 1
         finally:
@@ -158,6 +182,8 @@ class TestRunEval:
     async def test_false_negative_detection(self):
         """恶意样本被判低 → 漏报。"""
         agent = MagicMock()
+        agent.connect = AsyncMock()
+        agent.disconnect = AsyncMock()
         agent.analyze = AsyncMock(return_value=AnalysisResult(
             target="evil.com", target_type="domain", risk_level="低",
             token_usage={"total_tokens": 500},
@@ -170,7 +196,7 @@ class TestRunEval:
             ]
         }))
         try:
-            report = await run_eval(agent, dataset_path=tmp, online=False)
+            report = await run_eval(agent, dataset_path=tmp, online=True)
             assert report.passed == 0
             assert report.false_negative == 1
         finally:

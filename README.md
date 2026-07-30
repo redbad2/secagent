@@ -128,7 +128,7 @@ secagent config export                    # 导出配置（含 API key，0o600 �
 secagent config reload                    # 热重载配置文件
 secagent status                           # MCP 服务器健康检查
 secagent serve [--host HOST] [--port PORT] # 启动 HTTP API 服务
-secagent eval [--dataset FILE] [--online] [--save-baseline] [--check-baseline]  # 分析质量评估
+secagent eval [--dataset FILE] [--online] [--save-fixtures] [--save-baseline] [--check-baseline]  # 分析质量评估
 secagent --version                        # 显示版本
 secagent update                           # 升级 secagent
 ```
@@ -341,11 +341,14 @@ secagent update
 `secagent eval` 用于评估分析结果的质量，支持回放模式和在线模式。
 
 ```bash
-# 回放模式：用缓存的工具返回重跑分析（快速、免费）
+# 回放模式：用 fixture 中存档的工具返回替代 MCP，重跑当前 LLM + 评分链（快速、可复现）
 secagent eval --dataset tests/eval/dataset.yaml
 
 # 在线模式：实时调用 MCP server 分析（慢、消耗配额）
 secagent eval --dataset tests/eval/dataset.yaml --online
+
+# 在线跑一轮并把工具返回保存为回放 fixture（tests/eval/fixtures/）
+secagent eval --dataset tests/eval/dataset.yaml --online --save-fixtures
 
 # 保存当前结果为 baseline（供后续对比）
 secagent eval --dataset tests/eval/dataset.yaml --save-baseline
@@ -355,8 +358,11 @@ secagent eval --dataset tests/eval/dataset.yaml --check-baseline
 ```
 
 **回放 vs 在线模式**：
-- **回放模式**：从结果缓存中提取工具返回，用当前代码重跑分析链。适合验证 prompt/评分权重改动的影响。
-- **在线模式**：实时调用 MCP server。适合验证端到端功能。
+- **回放模式**：从 fixture（`tests/eval/fixtures/<target>.json`）中读取存档的工具返回，
+  用 ReplayableMCP 替代真实 MCP 调用，LLM、信号提取、双轨评分全部走当前代码。
+  适合验证 prompt/评分权重改动的影响，无 fixture 的样本标记 SKIP。
+  设 `SECAGENT_EVAL_FAKE_LLM=1` 可用脚本化假 LLM 做离线纯逻辑冒烟（零配额）。
+- **在线模式**：实时调用 MCP server。适合验证端到端功能，也是生成 fixture 的途径。
 
 **Baseline 工作流**：
 1. 代码改动前：`secagent eval --save-baseline` 保存基线
@@ -364,10 +370,12 @@ secagent eval --dataset tests/eval/dataset.yaml --check-baseline
 
 **数据集格式**（`tests/eval/dataset.yaml`）：
 ```yaml
-- target: "example.com"
-  target_type: "domain"
-  expected_risk: "高"
-  expected_iocs: ["192.0.2.1"]
+samples:
+  - target: "example.com"
+    expected_risk_level: ["高", "严重"]   # 支持单值或多档允许偏差
+    category: "malicious"                # malicious | benign | borderline
+    fixture: "example.com.json"          # 回放 fixture（默认 <target>.json）
+    note: "样本说明"
 ```
 
 ## 测试
@@ -397,7 +405,7 @@ secagent/
 │   ├── server.py         # HTTP API 服务（FastAPI）
 │   ├── notify.py         # Webhook 告警通知
 │   └── skills/           # 预置技能（8个）
-├── tests/                # 测试套件（101个测试）
+├── tests/                # 测试套件（251个测试）
 ├── config.template.yaml  # 配置模板
 ├── install.sh            # 安装脚本
 ├── pyproject.toml

@@ -123,3 +123,41 @@ class TestValidateConfig:
         })
         _, warnings = validate_config(cfg)
         assert not any("iporg" in w for w in warnings)
+
+
+class TestToolRoutingConfig:
+    """P1-2：tool_routing 配置。"""
+
+    def test_default_routing(self):
+        from secagent.config import DEFAULT_TOOL_ROUTING
+        cfg = AgentConfig()
+        assert cfg.tool_routing == DEFAULT_TOOL_ROUTING
+        assert cfg.tool_routing["domain_threat_intel"][0] == "ctia_domain"
+        assert "iporg" in cfg.tool_routing["ip_threat_intel"]
+
+    def test_default_routing_isolated_copy(self):
+        """默认值是副本，修改一个实例不影响其他实例。"""
+        a = AgentConfig()
+        a.tool_routing["domain_threat_intel"].append("x")
+        b = AgentConfig()
+        assert "x" not in b.tool_routing["domain_threat_intel"]
+
+    def test_load_config_custom_routing(self, tmp_path, monkeypatch):
+        """config.yaml 中的 tool_routing 覆盖默认值。"""
+        import secagent.config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "SECAGENT_HOME", tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "llm:\n  base_url: http://x\n  api_key: k\n  model: m\n"
+            "tool_routing:\n"
+            "  domain_threat_intel: [qianxin_fdp_domain, ctia_domain]\n",
+            encoding="utf-8",
+        )
+        # 隔离用户环境的 .env / .hermes 影响
+        monkeypatch.setattr(cfg_mod, "_load_dotenv", lambda p: {})
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        cfg = load_config()
+        assert cfg.tool_routing["domain_threat_intel"] == [
+            "qianxin_fdp_domain", "ctia_domain",
+        ]
+        # 未配置的组被丢弃（用户自定义整体替换）
+        assert "ip_threat_intel" not in cfg.tool_routing

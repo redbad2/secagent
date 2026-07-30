@@ -165,6 +165,11 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 
 ## P1-1 评估回放模式重设计：缓存工具返回而非最终结果
 
+> ✅ 已完成：新增 `secagent/eval_replay.py`（extract_tool_outputs / ReplayableMCP /
+> ScriptedLLM）；eval 回放改走 fixture（`tests/eval/fixtures/`），ResultCache 不再
+> 用于 eval；`--save-fixtures` 在线生成 fixture；`SECAGENT_EVAL_FAKE_LLM=1` 离线冒烟；
+> 死代码已清理；dataset.yaml 每样本含 fixture 字段。
+
 ### 现状与问题
 
 `eval.py::_eval_one` 回放模式调用 `agent.analyze(..., reuse=True)`，命中的是 `ResultCache` 中缓存的**最终 AnalysisResult**（`cache.py`，TTL 默认 1 小时）。两个根本缺陷：
@@ -195,6 +200,11 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 
 ## P1-2 工具去重与路由（ROADMAP P1-3 顺延）
 
+> ✅ 已完成：`config.py` 新增 `tool_routing`（能力组 → server 优先级，含默认值与
+> template 示例）；`MCPManager.get_tool_definitions(server_filter, open_all_capabilities)`
+> 同能力组默认只暴露最高优先级可用 server，首选失败回退组内下一个，deep 放开全组；
+> `agent._call_cache` 调用级去重（canonical args 作 key，命中标注 (cached)，analyze 开始清空）。
+
 ### 现状与问题
 
 39+ 个工具全量注入 prompt（`mcp_manager.py:269`），ctia_domain 与 fdp_domain 等能力重叠：工具描述占用大量 prompt token；LLM 可能用语义重复的工具重复查询同一目标。
@@ -220,6 +230,9 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 ---
 
 ## P1-3 结构化最终输出（ROADMAP P2-5 顺延）
+
+> ✅ 已完成（c854f93 代码 + 本次补全）：收敛轮追加"仅输出结论 JSON"指令；
+> `structured_final` 仅 analyze 开启（追问保持自然语言）；补 3 个验收单测。
 
 ### 现状与问题
 

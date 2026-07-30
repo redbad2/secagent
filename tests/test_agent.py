@@ -293,6 +293,163 @@ class TestSecurityAgent:
         assert "".join(stream_chunks) == "hello world"
 
     @pytest.mark.asyncio
+    async def test_run_loop_structured_final_output(self, agent):
+        """P1-3：收敛轮用 json_object 强制结构化输出，主路径不依赖正则 fallback。"""
+        from secagent import result_parser
+
+        agent.mcp = MagicMock()
+        agent.mcp.call_tool = AsyncMock(return_value="tool result data")
+
+        tc_delta = _make_stream_tool_call_delta(0, tc_id="tc_1", name="test_tool", arguments="{}")
+        stream1 = _async_stream(_make_stream_response(tool_calls_deltas=[
+            _make_stream_chunk(tool_calls=[tc_delta])
+        ]))
+        # 第二轮：自然语言收敛回复（将被结构化输出替换）
+        stream2 = _async_stream(_make_stream_response(content="分析完成，该域名风险较低。"))
+        # 第三轮：结构化补全（json_object），末 chunk 携带 usage
+        structured_json = ('{"risk_level": "低", "confidence": 0.9, '
+                           '"findings": ["知名厂商域名"], "iocs": [], '
+                           '"summary": "安全", "recommendation": "无需处置"}')
+        usage_chunk = _make_stream_chunk()
+        usage_chunk.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+        stream3 = _async_stream([_make_stream_chunk(content=structured_json), usage_chunk])
+
+        create = _mock_llm(agent, side_effect=[stream1, stream2, stream3])
+
+        messages = [{"role": "user", "content": "test"}]
+        tools = [{"type": "function", "function": {"name": "test_tool"}}]
+        output, msg, usage = await agent._run_loop(
+            messages, tools, "test-model",
+            degrade_reasons=[], structured_final=True,
+        )
+
+        # 结构化输出替换自然语言回复
+        assert output == structured_json
+        # 第三次调用携带 response_format=json_object
+        assert create.call_count == 3
+        assert create.call_args_list[2].kwargs["response_format"] == {"type": "json_object"}
+        # token_usage 累加了结构化补全的消耗
+        assert usage["total_tokens"] == 15
+        # "只输出结论 JSON"指令不留在会话历史
+        assert not any("仅输出最终结论 JSON" in m.get("content", "") for m in messages)
+
+        # 主路径不依赖正则 fallback：_try_extract_bare_json 未被调用
+        with patch.object(result_parser, "_try_extract_bare_json") as bare_mock:
+            result = result_parser.parse_analysis_result(
+                target="example.com", target_type="domain",
+                llm_output=output, tools_used=["test_tool"],
+            )
+        bare_mock.assert_not_called()
+        assert result.risk_level == "低"
+        assert result.confidence == 0.9
+        assert result.findings == ["知名厂商域名"]
+
+    @pytest.mark.asyncio
+    async def test_run_loop_structured_final_fallback_on_error(self, agent):
+        """P1-3：端点不支持 json_object（400）时回落自然语言解析，并记录 degrade_reasons。"""
+        agent.mcp = MagicMock()
+        agent.mcp.call_tool = AsyncMock(return_value="tool result data")
+
+        tc_delta = _make_stream_tool_call_delta(0, tc_id="tc_1", name="test_tool", arguments="{}")
+        stream1 = _async_stream(_make_stream_response(tool_calls_deltas=[
+            _make_stream_chunk(tool_calls=[tc_delta])
+        ]))
+        stream2 = _async_stream(_make_stream_response(content="分析完成，该域名风险较低。"))
+
+        create = _mock_llm(agent, side_effect=[
+            stream1, stream2,
+            Exception("400 Bad Request: response_format is not supported"),
+        ])
+
+        degrade_reasons = []
+        messages = [{"role": "user", "content": "test"}]
+        tools = [{"type": "function", "function": {"name": "test_tool"}}]
+        output, msg, _ = await agent._run_loop(
+            messages, tools, "test-model",
+            degrade_reasons=degrade_reasons, structured_final=True,
+        )
+
+        # 回落到自然语言回复
+        assert output == "分析完成，该域名风险较低。"
+        assert create.call_count == 3
+        assert any("结构化输出失败" in r for r in degrade_reasons)
+        # 指令消息已清理
+        assert not any("仅输出最终结论 JSON" in m.get("content", "") for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_run_loop_followup_not_structured(self, agent):
+        """P1-3：追问路径（structured_final=False）不触发结构化补全，保持自然语言。"""
+        agent.mcp = MagicMock()
+        agent.mcp.call_tool = AsyncMock(return_value="tool result data")
+
+        tc_delta = _make_stream_tool_call_delta(0, tc_id="tc_1", name="test_tool", arguments="{}")
+        stream1 = _async_stream(_make_stream_response(tool_calls_deltas=[
+            _make_stream_chunk(tool_calls=[tc_delta])
+        ]))
+        stream2 = _async_stream(_make_stream_response(content="子域名共 3 个，均无风险。"))
+
+        create = _mock_llm(agent, side_effect=[stream1, stream2])
+
+        messages = [{"role": "user", "content": "test"}]
+        tools = [{"type": "function", "function": {"name": "test_tool"}}]
+        output, msg, _ = await agent._run_loop(messages, tools, "test-model")
+
+        assert output == "子域名共 3 个，均无风险。"
+        assert create.call_count == 2  # 无第三次结构化补全
+
+    @pytest.mark.asyncio
+    async def test_run_loop_call_dedup(self, agent):
+        """P1-2：相同工具+相同参数的重复调用命中缓存，不产生第二次 RPC。"""
+        agent.mcp = MagicMock()
+        agent.mcp.call_tool = AsyncMock(return_value="tool data")
+
+        def _tc_stream(tc_id):
+            delta = _make_stream_tool_call_delta(0, tc_id=tc_id, name="tool",
+                                                 arguments='{"q": "x"}')
+            return _async_stream(_make_stream_response(tool_calls_deltas=[
+                _make_stream_chunk(tool_calls=[delta])
+            ]))
+
+        stream3 = _async_stream(_make_stream_response(content="done"))
+        _mock_llm(agent, side_effect=[_tc_stream("tc_1"), _tc_stream("tc_2"), stream3])
+
+        messages = [{"role": "user", "content": "test"}]
+        tools = [{"type": "function", "function": {"name": "tool"}}]
+        output, _, _ = await agent._run_loop(messages, tools, "test-model")
+
+        assert agent.mcp.call_tool.call_count == 1  # 第二次命中缓存
+        tool_msgs = [m for m in messages if m.get("role") == "tool"]
+        assert len(tool_msgs) == 2
+        assert "(cached" in tool_msgs[1]["content"]
+        assert "tool data" in tool_msgs[1]["content"]  # 信号内容保留
+
+    @pytest.mark.asyncio
+    async def test_run_loop_call_dedup_args_normalized(self, agent):
+        """P1-2：参数键顺序不同也视为同一调用（canonical JSON）。"""
+        agent.mcp = MagicMock()
+        agent.mcp.call_tool = AsyncMock(return_value="tool data")
+
+        def _tc_stream(tc_id, arguments):
+            delta = _make_stream_tool_call_delta(0, tc_id=tc_id, name="tool",
+                                                 arguments=arguments)
+            return _async_stream(_make_stream_response(tool_calls_deltas=[
+                _make_stream_chunk(tool_calls=[delta])
+            ]))
+
+        stream3 = _async_stream(_make_stream_response(content="done"))
+        _mock_llm(agent, side_effect=[
+            _tc_stream("tc_1", '{"a": 1, "b": 2}'),
+            _tc_stream("tc_2", '{"b": 2, "a": 1}'),
+            stream3,
+        ])
+
+        messages = [{"role": "user", "content": "test"}]
+        tools = [{"type": "function", "function": {"name": "tool"}}]
+        await agent._run_loop(messages, tools, "test-model")
+
+        assert agent.mcp.call_tool.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_analyze_reuse_cache_hit_skips_llm(self, agent):
         """reuse=True 且缓存命中时直接返回缓存结果，不调用 LLM、不连接 MCP。"""
         agent.cache.put("example.com", "standard", {

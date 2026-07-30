@@ -36,9 +36,16 @@ class MCPManager:
     以满足 anyio task group 的 same-task 约束。
     """
 
-    def __init__(self, servers: dict[str, MCPServerConfig], tool_output_limit: int = 1500):
+    def __init__(self, servers: dict[str, MCPServerConfig], tool_output_limit: int = 1500,
+                 tool_routing: dict[str, list[str]] | None = None):
         self.servers_config = servers
         self._tool_output_limit = tool_output_limit
+        # 工具路由（P1-2）：能力组 → server 优先级，用于同能力工具去重
+        self._tool_routing = tool_routing or {}
+        # server → 能力组 反查表
+        self._server_group: dict[str, str] = {
+            s: group for group, servers in self._tool_routing.items() for s in servers
+        }
         self._sessions: dict[str, Any] = {}      # name -> ClientSession
         self._transports: dict[str, Any] = {}     # name -> transport ctx
         self._tools_cache: list[MCPTool] = []
@@ -266,15 +273,35 @@ class MCPManager:
     def tools(self) -> list[MCPTool]:
         return list(self._tools_cache)
 
-    def get_tool_definitions(self, server_filter: set[str] | None = None) -> list[dict[str, Any]]:
+    def get_tool_definitions(self, server_filter: set[str] | None = None,
+                             open_all_capabilities: bool = False) -> list[dict[str, Any]]:
         """返回 OpenAI tool calling 格式的工具定义。
 
         Args:
             server_filter: 只返回这些 server 的工具。None = 全部。
+            open_all_capabilities: True 时放开能力路由（deep 深度用），
+                暴露同能力组全部 server 的工具；False 时同能力组只暴露
+                最高优先级可用 server 的工具（P1-2 工具去重）。
         """
         tools = self._tools_cache
         if server_filter is not None:
             tools = [t for t in tools if t.server in server_filter]
+
+        # P1-2 能力路由：同能力组只保留最高优先级可用 server 的工具；
+        # 首选连接失败时回退组内下一个；整组不可用时不过滤（有多少暴露多少）
+        if not open_all_capabilities and self._tool_routing:
+            chosen: dict[str, str] = {}  # 能力组 -> 中选 server
+            for group, priority in self._tool_routing.items():
+                for server in priority:
+                    if server in self._sessions and server not in self._failed_servers:
+                        chosen[group] = server
+                        break
+            tools = [
+                t for t in tools
+                if t.server not in self._server_group
+                or chosen.get(self._server_group[t.server]) in (None, t.server)
+            ]
+
         return [
             {
                 "type": "function",

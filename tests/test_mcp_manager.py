@@ -123,3 +123,81 @@ class TestMCPManagerProperties:
     def test_tools_default_empty(self):
         mgr = MCPManager({})
         assert mgr.tools == []
+
+
+class TestToolRouting:
+    """P1-2 工具路由：同能力组默认只暴露最高优先级可用 server 的工具。"""
+
+    ROUTING = {
+        "domain_threat_intel": ["ctia_domain", "qianxin_fdp_domain"],
+        "ip_threat_intel": ["ctia_ip", "qianxin_fdp_ip", "iporg"],
+    }
+
+    def _make_manager(self) -> MCPManager:
+        mgr = MCPManager({}, tool_routing=dict(self.ROUTING))
+        # 伪造已连接 session（路由按 _sessions 判断可用性）
+        for name in ["ctia_domain", "qianxin_fdp_domain", "ctia_ip",
+                     "qianxin_fdp_ip", "iporg", "hunter_mcp"]:
+            mgr._sessions[name] = object()
+        mgr._tools_cache = [
+            MCPTool(name="t1", server="ctia_domain", description="", input_schema={}),
+            MCPTool(name="t2", server="qianxin_fdp_domain", description="", input_schema={}),
+            MCPTool(name="t3", server="ctia_ip", description="", input_schema={}),
+            MCPTool(name="t4", server="qianxin_fdp_ip", description="", input_schema={}),
+            MCPTool(name="t5", server="iporg", description="", input_schema={}),
+            MCPTool(name="t6", server="hunter_mcp", description="", input_schema={}),
+        ]
+        return mgr
+
+    def _names(self, defs):
+        return {d["function"]["name"] for d in defs}
+
+    def test_default_only_preferred_server(self):
+        """默认只暴露每组最高优先级 server 的工具 + 未分组 server。"""
+        mgr = self._make_manager()
+        names = self._names(mgr.get_tool_definitions())
+        assert names == {"ctia_domain__t1", "ctia_ip__t3", "hunter_mcp__t6"}
+
+    def test_fallback_when_preferred_failed(self):
+        """首选 server 连接失败时回退组内下一个。"""
+        mgr = self._make_manager()
+        mgr._failed_servers.add("ctia_domain")
+        names = self._names(mgr.get_tool_definitions())
+        assert "qianxin_fdp_domain__t2" in names
+        assert "ctia_domain__t1" not in names
+        assert "ctia_ip__t3" in names  # 其他组不受影响
+
+    def test_fallback_skips_disconnected(self):
+        """首选未连接（不在 _sessions）时回退下一个。"""
+        mgr = self._make_manager()
+        del mgr._sessions["ctia_ip"]
+        del mgr._sessions["qianxin_fdp_ip"]
+        names = self._names(mgr.get_tool_definitions())
+        assert "iporg__t5" in names
+        assert "ctia_ip__t3" not in names
+
+    def test_group_fully_unavailable_exposes_all_connected(self):
+        """整组首选都不可用时不过滤（有多少暴露多少）。"""
+        mgr = self._make_manager()
+        mgr._failed_servers.add("ctia_domain")
+        mgr._failed_servers.add("qianxin_fdp_domain")
+        names = self._names(mgr.get_tool_definitions())
+        assert "ctia_domain__t1" in names
+        assert "qianxin_fdp_domain__t2" in names
+
+    def test_open_all_capabilities(self):
+        """open_all_capabilities=True（deep 深度）放开全组。"""
+        mgr = self._make_manager()
+        names = self._names(mgr.get_tool_definitions(open_all_capabilities=True))
+        assert names == {"ctia_domain__t1", "qianxin_fdp_domain__t2",
+                         "ctia_ip__t3", "qianxin_fdp_ip__t4",
+                         "iporg__t5", "hunter_mcp__t6"}
+
+    def test_no_routing_config_no_filter(self):
+        """未配置 tool_routing 时行为与之前一致（全量暴露）。"""
+        mgr = MCPManager({})
+        mgr._tools_cache = [
+            MCPTool(name="t1", server="a", description="", input_schema={}),
+            MCPTool(name="t2", server="b", description="", input_schema={}),
+        ]
+        assert len(mgr.get_tool_definitions()) == 2

@@ -99,6 +99,13 @@ OPTIONAL_SERVERS = {
 # Exa 搜索（可选，通过 config 开关控制）
 EXA_SERVER = "exa"
 
+# 工具路由（P1-2）：能力组 → server 优先级。同能力组默认只暴露最高优先级
+# 可用 server 的工具，首选不可用时回退组内下一个；deep 深度放开全组。
+DEFAULT_TOOL_ROUTING: dict[str, list[str]] = {
+    "domain_threat_intel": ["ctia_domain", "qianxin_fdp_domain"],
+    "ip_threat_intel": ["ctia_ip", "qianxin_fdp_ip", "iporg"],
+}
+
 
 @dataclass
 class LLMConfig:
@@ -167,6 +174,10 @@ class AgentConfig:
     window_trigger: int = 12        # tool 消息数超过此值开始降级
     # 成本预算护栏
     budget_max_tokens: int = 0      # 单次分析最大 token 数（0=不限）
+    # 工具路由：能力组 → server 优先级（P1-2 工具去重）
+    tool_routing: dict[str, list[str]] = field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_TOOL_ROUTING.items()}
+    )
 
 
 def _load_dotenv(env_path: Path) -> dict[str, str]:
@@ -320,6 +331,16 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
     # 12. 成本预算护栏
     budget_max_tokens = int(yaml_data.get("budget", {}).get("max_tokens_per_analysis", 0))
 
+    # 13. 工具路由（能力组 → server 优先级）
+    routing_raw = yaml_data.get("tool_routing")
+    if isinstance(routing_raw, dict) and routing_raw:
+        tool_routing = {
+            str(k): [str(s) for s in v]
+            for k, v in routing_raw.items() if isinstance(v, list)
+        }
+    else:
+        tool_routing = {k: list(v) for k, v in DEFAULT_TOOL_ROUTING.items()}
+
     return AgentConfig(
         llm=llm,
         models=models,
@@ -337,6 +358,7 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         window_trigger=window_trigger,
         skills_llm_create=skills_llm_create,
         budget_max_tokens=budget_max_tokens,
+        tool_routing=tool_routing,
     )
 
 
