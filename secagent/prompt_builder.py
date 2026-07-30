@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from secagent.learning import Skill, SkillStore, MemoryStore
 
@@ -70,8 +70,14 @@ def build_system_prompt(
     skills: list["Skill"] | None = None,
     web_fetch_enabled: bool = True,
     exa_enabled: bool = True,
+    similar_cases: list[dict[str, Any]] | None = None,
 ) -> str:
-    """构建完整的系统提示。"""
+    """构建完整的系统提示。
+
+    Args:
+        similar_cases: 相似历史案例列表（含 target/risk_level/summary/timestamp），
+            仅作为参考注入，prompt 中明确标注需重新验证。
+    """
     parts: list[str] = [SECURITY_ANALYST_PERSONA]
 
     # web_fetch 提示
@@ -137,6 +143,18 @@ def build_system_prompt(
             parts.append("1. 查询沙箱分析数据\n2. 分析关联 C2 IP/域名\n3. 综合评估")
         elif target_type == "cve":
             parts.append("1. 查询漏洞详情和 CVSS 评分\n2. 查询在野利用情况\n3. 综合评估")
+
+    # 相似历史案例（仅参考，需重新验证）
+    if similar_cases:
+        parts.append("--- 相似历史案例（仅供参考，必须重新用工具验证，禁止直接沿用） ---")
+        for case in similar_cases:
+            ts = case.get("timestamp", "")[:10]  # YYYY-MM-DD
+            parts.append(
+                f"- [{ts}] {case.get('target', '')} "
+                f"({case.get('risk_level', '未知')}): "
+                f"{(case.get('summary') or '')[:200]}"
+            )
+        parts.append("")
 
     # 当前任务
     parts.append("--- 当前任务 ---")

@@ -334,6 +334,24 @@ async def _run_analysis(agent, target, depth, fmt, on_tool_call=None, on_thinkin
         await agent.disconnect()
 
 
+def _check_reuse_hint(agent, target: str, reuse: bool) -> None:
+    """同目标 24h 内有历史会话且未用 --reuse 时，提示用户可加 --reuse。"""
+    if reuse or agent.sessions is None:
+        return
+    try:
+        from datetime import datetime, timedelta
+        session = agent.sessions.get_session(target)
+        if session and session.get("timestamp"):
+            ts = datetime.fromisoformat(session["timestamp"])
+            if datetime.now() - ts < timedelta(hours=24):
+                console.print(
+                    f"[dim]💡 提示: 该目标 24 小时内有分析记录，"
+                    f"加 --reuse 可跳过 LLM 调用直接复用缓存[/dim]"
+                )
+    except Exception:
+        pass  # 提示失败不影响主流程
+
+
 # 分析深度对应的整体超时（秒）：复杂域名分析容易超过旧默认 300s
 DEPTH_TIMEOUT = {"quick": 180, "standard": 600, "deep": 900}
 
@@ -369,6 +387,7 @@ def run_analyze_sync(agent, target, fmt="text", depth="standard", output_file=No
             return False
 
     try:
+        _check_reuse_hint(agent, target, reuse)
         timeout = depth_timeout(depth)
         result = asyncio.run(asyncio.wait_for(
             _run_analysis(
@@ -479,6 +498,7 @@ def run_analyze_interactive(agent, target, fmt="text", depth="standard", output_
             return False
 
     async def _run():
+        _check_reuse_hint(agent, target, reuse)
         if not reuse:
             await agent.connect(target_type=detect_target_type(target))
         result = await agent.analyze(

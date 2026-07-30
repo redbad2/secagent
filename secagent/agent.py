@@ -246,6 +246,27 @@ class SecurityAgent:
         # 加载相关技能（deep 深度额外加载交叉验证技能）
         relevant_skills = self.skills.find_relevant(target_type, target, depth=depth)
 
+        # 相似历史案例检索（P2-2）：注入历史结论作为参考，但要求重新验证
+        # reuse=True 命中缓存时已提前返回，不会走到这里
+        similar_cases: list[dict[str, Any]] = []
+        if self.sessions is not None:
+            try:
+                # 搜索同目标的历史会话（FTS5 全文检索）
+                similar_cases = self.sessions.search(target, limit=3)
+                # 对域名，额外搜索父域名（如 sub.example.com → example.com）
+                if target_type == "domain":
+                    parent = ".".join(target.split(".")[1:]) if "." in target else ""
+                    if parent and parent != target:
+                        parent_cases = self.sessions.search(parent, limit=2)
+                        # 合并去重（按 target + timestamp）
+                        seen = {(c["target"], c["timestamp"]) for c in similar_cases}
+                        for c in parent_cases:
+                            if (c["target"], c["timestamp"]) not in seen:
+                                similar_cases.append(c)
+                        similar_cases = similar_cases[:3]  # 最多保留 3 条
+            except Exception as e:
+                logger.debug("相似案例检索失败（忽略）: %s", e)
+
         # 构建系统提示
         system_prompt = build_system_prompt(
             target=target,
@@ -255,6 +276,7 @@ class SecurityAgent:
             skills=relevant_skills,
             web_fetch_enabled=self.config.web_fetch_enabled,
             exa_enabled=self.config.exa_enabled,
+            similar_cases=similar_cases,
         )
 
         # 获取工具定义
