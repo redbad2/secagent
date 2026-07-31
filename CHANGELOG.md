@@ -444,3 +444,44 @@
 - **新增 `tests/test_parsers.py`**（24 用例）：覆盖斜杠日期解析、结构化 is_cdn_ip 补算、compute_cdn_flag、结构化 vs generic 一致性、降级格式回退。这是 v0.9.1 两个回归能溜进来的根因——之前无 parser 专项测试。
 
 **测试**：全套 223 passed（+24），唯一失败仍是预存的 `test_web_fetch::test_fetch_invalid_host`（网络环境代理 502，与本次无关）。
+
+---
+
+## 阶段二十：IMPROVEMENTS 改进包（v0.10.0）
+
+> 依据 `IMPROVEMENTS.md`（基于 v0.9.2 代码评审）实施。原计划里程碑 v0.9.3 / v0.10.0 / v0.10.1 / v0.11.0 的内容未单独发版，合并为本次 v0.10.0 一次发布。剩余 P3-1（CI）、P3-2（serve 鉴权）、P3-3（数据集扩充）未做。
+
+### P0 bug 修复（1b913c8）
+- **P0-1** `evaluate_result()` 引用不存在的 `critical` 属性死代码删除（原路径必抛 AttributeError 且被静默吞掉）。
+- **P0-2** `server.py` 启动时一次性全量连接 MCP server：修复首请求按类型过滤导致后续异类型请求缺工具，以及并发请求重复建连的竞态。
+- **P0-3** LLM 降级成功时记录 `degrade_reasons`，后续迭代直接用 fallback 模型；`AnalysisResult` 新增 `degrade_reasons` 字段。
+- **P0-4** `install.sh` 技能复制路径改为包内 `secagent/skills/`。
+
+### P1 评估与成本（c854f93、0ef1047）
+- **P1-1 评估回放重设计**：新增 `eval_replay.py`（`extract_tool_outputs` / `save_fixture` / `load_fixture` / `ReplayableMCP` / `ScriptedAsyncLLM` / `ScriptedSyncLLM`）。回放改走 `tests/eval/fixtures/` 工具返回快照，LLM + 信号提取 + 双轨评分全部跑当前代码，替代原先"命中 ResultCache 最终结果"的假回放；无 fixture 干净 SKIP。`secagent eval` 新增 `--save-fixtures`（在线生成快照）与 `--check-baseline`；`dataset.yaml` 每样本登记 fixture 字段；eval 死代码清理。
+- **P1-2 工具去重与路由**：`config.py` 新增 `tool_routing`（能力组 → server 优先级，含默认值与 template 示例）；`MCPManager.get_tool_definitions(server_filter, open_all_capabilities)` 同能力组默认只暴露最高优先级可用 server，首选失败回退组内下一个，deep 放开全组；`agent._call_cache` 调用级去重（canonical args 作 key，命中标注 `(cached)`，analyze 开始清空）。
+- **P1-3 结构化最终输出**：收敛轮带 `response_format={"type":"json_object"}` + "仅输出最终结论 JSON"指令重新补全（用后弹出指令），三级正则 fallback 降级为兼容层；`structured_final` 仅 analyze 开启，追问保持自然语言。
+
+### P2 完善包（9c9b72b、d56f69e、8125c4c）
+- **P2-1 成本预算护栏**：`budget.max_tokens_per_analysis`（默认 0 不限）；用量达 80% 注入收敛提示，达 100% 走 `_salvage_final_output()` 收尾，超限写入 `degrade_reasons`。
+- **P2-2 相似案例检索注入**：analyze 前用目标 + 父域名 FTS5 检索 top-3 历史案例注入 system prompt（标注"仅供参考，必须重新验证"）；24h 内有历史且未用 `--reuse` 时 CLI 提示。
+- **P2-3** `parsers/generic.py` 抽出公开 `extract_json()`，ctia/fdp 复用，消除 30 行 ×2 重复。
+- **P2-4 严重风险评估双路径合并**：`_post_analyze_learning` 加 `batch` 参数，batch 与非 batch 高风险分析走同一条学习路径（batch 跳过技能创建与交互）。
+- **P2-5** README 补 `secagent eval` 文档（子命令表 + 评估小节）。
+
+### 其他修复
+- `cli.py` 补 `import re`（`/models switch` NameError）。
+- `test_context_pruning` 硬编码过期日期改动态生成。
+
+---
+
+## 最终状态（v0.10.0）
+
+| 指标 | 数值 |
+|------|------|
+| 核心源码 | ~7300 行 |
+| 测试 | 251 个 |
+| 技能 | 8 个 |
+| 依赖 | 8 个 |
+| 新增模块 | eval_replay.py（评估回放） |
+| 新增能力 | fixture 回放评估、工具路由与调用去重、结构化最终输出、token 预算护栏、相似案例注入 |

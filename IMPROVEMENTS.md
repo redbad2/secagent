@@ -32,6 +32,8 @@
 
 ## P0-1 `evaluate_result()` 引用不存在的 `critical` 属性
 
+> ✅ 已完成（v0.10.0，1b913c8）：死代码块已删除，主路径简化为 assess → apply。
+
 ### 现状与问题
 
 `secagent/agent.py:386-431` 的 `evaluate_result()`：
@@ -70,6 +72,8 @@ if not learning_actions:
 
 ## P0-2 `server.py` connect 竞态 + 首请求类型过滤导致后续请求缺工具
 
+> ✅ 已完成（v0.10.0，1b913c8）：启动时一次性全量连接，请求路径不再判断连接状态。
+
 ### 现状与问题
 
 `secagent/server.py:60-74`（`/analyze`）：
@@ -101,6 +105,8 @@ if not agent._connected:
 ---
 
 ## P0-3 LLM 降级成功但未记录降级信号
+
+> ✅ 已完成（v0.10.0，1b913c8）：降级成功记录 degrade_reasons，后续迭代直接用 fallback 模型。
 
 ### 现状与问题
 
@@ -135,6 +141,8 @@ model = fallback_model   # 后续迭代直接用 fallback
 ---
 
 ## P0-4 `install.sh` 技能复制路径失效
+
+> ✅ 已完成（v0.10.0，1b913c8）：复制路径改为包内 `secagent/skills/`。
 
 ### 现状与问题
 
@@ -254,6 +262,8 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 
 ## P2-1 成本预算护栏（ROADMAP P2-4 顺延）
 
+> ✅ 已完成（v0.10.0，9c9b72b）：`budget.max_tokens_per_analysis`；80% 注入收敛提示，100% 走 salvage，超限写 degrade_reasons。
+
 ### 修改方案
 
 1. `config.py` 新增 `budget.max_tokens_per_analysis: int = 0`（0=不限），`AgentConfig` 同名字段。
@@ -267,6 +277,8 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 ---
 
 ## P2-2 相似案例检索注入（ROADMAP P2-2 顺延）
+
+> ✅ 已完成（v0.10.0，8125c4c）：目标+父域名 FTS5 top-3 注入 prompt；24h 内有历史时 CLI 提示 --reuse。
 
 ### 修改方案
 
@@ -282,6 +294,8 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 
 ## P2-3 `_extract_json` 重复代码合并
 
+> ✅ 已完成（v0.10.0，9c9b72b）：`parsers/generic.py` 公开 `extract_json()`，ctia/fdp 复用。
+
 ### 现状与方案
 
 `parsers/ctia.py:87-117` 与 `parsers/fdp.py:95-124` 的 `_extract_json` 逐字符括号匹配实现完全相同（约 30 行 ×2）。
@@ -296,6 +310,8 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 ---
 
 ## P2-4 严重风险评估双路径合并
+
+> ✅ 已完成（v0.10.0，d56f69e）：`_post_analyze_learning` 加 batch 参数，两条路径统一。
 
 ### 现状与问题
 
@@ -318,6 +334,8 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 ---
 
 ## P2-5 README 补 `secagent eval` 文档
+
+> ✅ 已完成（v0.10.0，9c9b72b + 0ef1047）：子命令表 + 评估小节 + fixture 机制说明。
 
 ### 现状
 
