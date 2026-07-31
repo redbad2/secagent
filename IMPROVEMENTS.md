@@ -3,28 +3,31 @@
 > 基线版本：v0.9.2（commit 9c2969b），224 个测试全绿。
 > 本文档替代 ROADMAP.md 成为当前执行的改进清单。每项包含：现状与问题 → 修改方案（含文件/行号）→ 验收标准。
 > 评审中确认的上期 ROADMAP 完成状态见附录 A。
+>
+> **进度（截至 v0.10.0，commit c5309ac）**：P0×4、P1×3、P2×5 全部完成，251 个测试全绿；
+> 剩余 P3-1（CI）、P3-2（serve 鉴权）、P3-3（数据集扩充）未做，另有 fixture/baseline 待真实配额生成（见 P1-1 备注）。
 
 ---
 
 ## 优先级总览
 
-| 编号 | 改进点 | 类别 | 预估工作量 |
-|------|--------|------|-----------|
-| P0-1 | `evaluate_result()` 引用不存在的 `critical` 属性（死代码 + AttributeError） | Bug | 0.5 天 |
-| P0-2 | `server.py` connect 竞态 + 首请求类型过滤导致后续请求缺工具 | Bug | 0.5 天 |
-| P0-3 | LLM 降级成功但未记录降级信号，报告误声明"未降级" | Bug | 0.2 天 |
-| P0-4 | `install.sh` 技能复制路径失效（技能已移入包内） | Bug | 0.2 天 |
-| P1-1 | 评估回放模式重设计：缓存工具返回而非最终结果 | 评估有效性 | 1.5 天 |
-| P1-2 | 工具去重与路由（ROADMAP P1-3 顺延） | 成本/准确性 | 1~2 天 |
-| P1-3 | 结构化最终输出 `response_format=json_object`（ROADMAP P2-5 顺延） | 健壮性 | 0.5 天 |
-| P2-1 | 成本预算护栏（ROADMAP P2-4 顺延） | 成本 | 0.5 天 |
-| P2-2 | 相似案例检索注入（ROADMAP P2-2 顺延） | 自我学习闭环 | 1 天 |
-| P2-3 | `_extract_json` 重复代码合并到 generic.py | 可维护性 | 0.2 天 |
-| P2-4 | 严重风险评估双路径合并（`evaluate_result` / `_evaluate_critical`） | 可维护性 | 0.5 天 |
-| P2-5 | README 补 `secagent eval` 文档 | 文档 | 0.2 天 |
-| P3-1 | GitHub Actions CI | 工程质量 | 0.5 天 |
-| P3-2 | server.py API 鉴权 | 安全 | 0.5 天 |
-| P3-3 | 评估数据集扩充（5 → 20+ 样本） | 评估有效性 | 持续 |
+| 编号 | 改进点 | 类别 | 预估工作量 | 状态 |
+|------|--------|------|-----------|------|
+| P0-1 | `evaluate_result()` 引用不存在的 `critical` 属性（死代码 + AttributeError） | Bug | 0.5 天 | ✅ v0.10.0 |
+| P0-2 | `server.py` connect 竞态 + 首请求类型过滤导致后续请求缺工具 | Bug | 0.5 天 | ✅ v0.10.0 |
+| P0-3 | LLM 降级成功但未记录降级信号，报告误声明"未降级" | Bug | 0.2 天 | ✅ v0.10.0 |
+| P0-4 | `install.sh` 技能复制路径失效（技能已移入包内） | Bug | 0.2 天 | ✅ v0.10.0 |
+| P1-1 | 评估回放模式重设计：缓存工具返回而非最终结果 | 评估有效性 | 1.5 天 | ✅ v0.10.0（fixture 待生成） |
+| P1-2 | 工具去重与路由（ROADMAP P1-3 顺延） | 成本/准确性 | 1~2 天 | ✅ v0.10.0 |
+| P1-3 | 结构化最终输出 `response_format=json_object`（ROADMAP P2-5 顺延） | 健壮性 | 0.5 天 | ✅ v0.10.0 |
+| P2-1 | 成本预算护栏（ROADMAP P2-4 顺延） | 成本 | 0.5 天 | ✅ v0.10.0 |
+| P2-2 | 相似案例检索注入（ROADMAP P2-2 顺延） | 自我学习闭环 | 1 天 | ✅ v0.10.0 |
+| P2-3 | `_extract_json` 重复代码合并到 generic.py | 可维护性 | 0.2 天 | ✅ v0.10.0 |
+| P2-4 | 严重风险评估双路径合并（`evaluate_result` / `_evaluate_critical`） | 可维护性 | 0.5 天 | ✅ v0.10.0 |
+| P2-5 | README 补 `secagent eval` 文档 | 文档 | 0.2 天 | ✅ v0.10.0 |
+| P3-1 | GitHub Actions CI | 工程质量 | 0.5 天 | ❌ 未实现 |
+| P3-2 | server.py API 鉴权 | 安全 | 0.5 天 | ❌ 未实现 |
+| P3-3 | 评估数据集扩充（5 → 20+ 样本） | 评估有效性 | 持续 | ❌ 未实现（持续） |
 
 依赖关系：P0 四项互不依赖可并行；P1-1 建议在 P1-2/P1-3 之前完成（后续改动靠它验证收益）；P2-4 依赖 P0-1。
 
@@ -173,10 +176,14 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 
 ## P1-1 评估回放模式重设计：缓存工具返回而非最终结果
 
-> ✅ 已完成：新增 `secagent/eval_replay.py`（extract_tool_outputs / ReplayableMCP /
+> ✅ 已完成（v0.10.0，0ef1047）：新增 `secagent/eval_replay.py`（extract_tool_outputs / ReplayableMCP /
 > ScriptedLLM）；eval 回放改走 fixture（`tests/eval/fixtures/`），ResultCache 不再
 > 用于 eval；`--save-fixtures` 在线生成 fixture；`SECAGENT_EVAL_FAKE_LLM=1` 离线冒烟；
 > 死代码已清理；dataset.yaml 每样本含 fixture 字段。
+>
+> ⏳ 遗留（需真实 API 配额）：`tests/eval/fixtures/` 尚为空、`baseline.json` 未入库。
+> 需执行 `secagent eval --online --save-fixtures` 生成快照并 `--save-baseline` 落盘，
+> 之后回放与 `--check-baseline` 才实际生效（此前全部样本干净 SKIP，属设计行为）。
 
 ### 现状与问题
 
@@ -208,7 +215,7 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 
 ## P1-2 工具去重与路由（ROADMAP P1-3 顺延）
 
-> ✅ 已完成：`config.py` 新增 `tool_routing`（能力组 → server 优先级，含默认值与
+> ✅ 已完成（v0.10.0，0ef1047）：`config.py` 新增 `tool_routing`（能力组 → server 优先级，含默认值与
 > template 示例）；`MCPManager.get_tool_definitions(server_filter, open_all_capabilities)`
 > 同能力组默认只暴露最高优先级可用 server，首选失败回退组内下一个，deep 放开全组；
 > `agent._call_cache` 调用级去重（canonical args 作 key，命中标注 (cached)，analyze 开始清空）。
@@ -239,7 +246,7 @@ mkdir -p "$SECAGENT_HOME"/{skills,logs}
 
 ## P1-3 结构化最终输出（ROADMAP P2-5 顺延）
 
-> ✅ 已完成（c854f93 代码 + 本次补全）：收敛轮追加"仅输出结论 JSON"指令；
+> ✅ 已完成（v0.10.0，c854f93 + 0ef1047 补全）：收敛轮追加"仅输出结论 JSON"指令；
 > `structured_final` 仅 analyze 开启（追问保持自然语言）；补 3 个验收单测。
 
 ### 现状与问题
@@ -354,6 +361,9 @@ README 子命令表加一行，并新增"## 分析质量评估"小节：用法�
 
 ## P3-1 GitHub Actions CI
 
+> ❌ 未实现：`.github/workflows/` 尚不存在。实施时注意：P1-1 已就位，
+> `python -m secagent eval --check-baseline` 步骤可以直接纳入（依赖 baseline.json 先生成入库）。
+
 ### 修改方案
 
 `.github/workflows/test.yml`：
@@ -383,6 +393,8 @@ jobs:
 
 ## P3-2 server.py API 鉴权
 
+> ❌ 未实现：`secagent serve` 仍无鉴权，绑定非 loopback 地址时无告警。
+
 ### 现状与问题
 
 `secagent serve --host 0.0.0.0` 后任何人可调用 `/analyze` 消耗 LLM/MCP 配额，也可读 `/history`（含敏感分析内容）。
@@ -400,7 +412,10 @@ jobs:
 
 ## P3-3 评估数据集扩充
 
-`tests/eval/dataset.yaml` 当前仅 5 条样本（2 malicious + benign/borderline），统计意义弱。随真实分析积累，按 ROADMAP 的分类（malicious/benign/borderline）扩到 20+，每条配 P1-1 的 fixture。此项持续进行，不设截止。
+> ❌ 未实现（持续项）：`tests/eval/dataset.yaml` 当前 6 条样本（2 malicious + benign/borderline），
+> 且 6 个 fixture 均待生成（见 P1-1 遗留）。扩样时每条需同步配 fixture。
+
+`tests/eval/dataset.yaml` 当前仅 6 条样本（2 malicious + benign/borderline），统计意义弱。随真实分析积累，按 ROADMAP 的分类（malicious/benign/borderline）扩到 20+，每条配 P1-1 的 fixture。此项持续进行，不设截止。
 
 ---
 
@@ -418,13 +433,16 @@ jobs:
 | P2-4 成本预算护栏 | ❌ 未实现 → 本文 P2-1 | grep 无 `budget` |
 | P2-5 结构化最终输出 | ❌ 未实现 → 本文 P1-3 | `response_format` 仅 salvage 路径使用 |
 
-## 附录 B：里程碑建议
+## 附录 B：里程碑与实际发版
 
-| 版本 | 内容 | 依赖 |
+原计划分四次发版，实际 P0/P1/P2 内容未单独发版，合并为 v0.10.0（c5309ac）一次发布：
+
+| 版本 | 内容 | 状态 |
 |------|------|------|
-| v0.9.3 | P0-1 ~ P0-4（bug 修复包） | 互不依赖，可一个 PR 一个 |
-| v0.10.0 | P1-1 + P3-1（评估可信 + CI） | P1-1 先行，CI 接入 baseline |
-| v0.10.1 | P1-2 + P1-3（成本与健壮性） | 用 v0.10.0 的评估验证收益 |
-| v0.11.0 | P2-1 ~ P2-5（完善包） | P2-4 依赖 P0-1 |
-| 持续 | P3-2、P3-3 | 按需 |
+| ~~v0.9.3~~ | P0-1 ~ P0-4（bug 修复包） | ✅ 并入 v0.10.0 |
+| v0.10.0 | P1-1 + P1-2 + P1-3 + P0 + P2 全部 | ✅ 已发布（c5309ac，251 测试全绿） |
+| ~~v0.10.1~~ | P1-2 + P1-3（成本与健壮性） | ✅ 并入 v0.10.0 |
+| ~~v0.11.0~~ | P2-1 ~ P2-5（完善包） | ✅ 并入 v0.10.0 |
+| v0.11.0（规划） | P3-1 CI + P3-2 serve 鉴权 | ❌ 未开始；CI 的 baseline 步骤依赖 fixture/baseline 先生成 |
+| 持续 | P3-3 数据集扩充 + fixture/baseline 生成 | ❌ 未开始，需真实 API 配额 |
 
