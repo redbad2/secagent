@@ -12,15 +12,23 @@
     POST /monitor/run - 触发监控扫描
     GET  /status    - MCP 服务器健康状态
     GET  /version   - 版本信息
+
+鉴权（P3-2）：
+    绑定 loopback（127.0.0.1/localhost/::1）时免认证。
+    绑定非 loopback 地址时，必须设置 SECAGENT_SERVE_API_KEY 环境变量
+    或 config.yaml 的 serve.api_key，所有请求需带 Authorization: Bearer <key>；
+    未配置 key 绑定非 loopback 地址时仅打印启动告警。
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
+import ipaddress
 import logging
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from secagent.config import load_config
@@ -29,16 +37,53 @@ from secagent.result_parser import detect_target_type
 logger = logging.getLogger(__name__)
 
 
-def create_app() -> FastAPI:
-    """创建 FastAPI 应用实例。"""
+def _is_loopback(host: str) -> bool:
+    """判断监听地址是否为本机回环地址。"""
+    if host in ("127.0.0.1", "localhost", "::1"):
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%")[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def _check_auth(req: Request, api_key: str, host: str) -> None:
+    """校验请求鉴权。loopback 来源免认证；否则校验 Authorization: Bearer <key>。"""
+    if _is_loopback(host) or not api_key:
+        return
+    scheme, _, token = req.headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="缺少 Bearer token")
+    # 常量时间比较，防时序侧信道
+    if not hmac.compare_digest(token.strip(), api_key):
+        raise HTTPException(status_code=401, detail="无效的 API key")
+
+
+def create_app(host: str = "127.0.0.1") -> FastAPI:
+    """创建 FastAPI 应用实例。host 用于判断是否需要鉴权。"""
     from secagent.agent import SecurityAgent
 
     config = load_config()
     if config.max_iterations < 15:
         config.max_iterations = 20
 
+    # 鉴权配置（P3-2）
+    api_key = config.serve_api_key
+    if not _is_loopback(host) and not api_key:
+        print(
+            f"\n  [警告] serve 绑定非 loopback 地址 {host} 但未配置 API key，"
+            "任何可访问该端口的人都可调用分析接口。\n"
+            "  建议设置 SECAGENT_SERVE_API_KEY 环境变量或在 config.yaml 配置 serve.api_key。\n"
+        )
+
     app = FastAPI(title="secagent API", description="CLI 安全分析 Agent HTTP API")
     agent = SecurityAgent(config)
+
+    @app.middleware("http")
+    async def auth_middleware(req: Request, call_next):
+        """全局鉴权：非 loopback 且配置了 key 时校验 Bearer token。"""
+        _check_auth(req, api_key, host)
+        return await call_next(req)
 
     @app.on_event("startup")
     async def startup():
@@ -184,7 +229,7 @@ def create_app() -> FastAPI:
 def run_server(host: str = "127.0.0.1", port: int = 8000):
     """启动 API 服务器。"""
     import uvicorn
-    app = create_app()
+    app = create_app(host=host)
     print(f"\n  secagent API 服务启动: http://{host}:{port}")
     print(f"  文档: http://{host}:{port}/docs\n")
     uvicorn.run(app, host=host, port=port)

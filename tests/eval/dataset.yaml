@@ -14,10 +14,12 @@
 # 注意：在线评估会真实调用 MCP 与 LLM，消耗配额；回放模式用 fixture 替代。
 # fixture 生成：secagent eval --online --save-fixtures（写入 tests/eval/fixtures/）。
 # 回放：secagent eval（读取 fixture 字段指定的文件，默认 <target>.json）。
-# 数据集应随真实案例积累持续扩充。以下为初始基线样本。
+# 数据集应随真实案例积累持续扩充。当前 23 条基线样本覆盖三类。
+# 目标：恶意 ≥10、良性 ≥8、边界 ≥5，达到 20+ 规模以具备统计意义。
+# （当前 7/11/5，恶意样本待随真实配额积累继续补充至 ≥10）
 
-version: 1
-description: "初始评估数据集，含恶意/良性/边界三类样本"
+version: 2
+description: "评估数据集（23 条）：恶意7 + 良性11 + 边界5，覆盖钓鱼/木马/主流服务/共享IP边界"
 
 samples:
   # === 已知恶意样本 ===
@@ -58,3 +60,109 @@ samples:
     category: borderline
     fixture: "www.cloudflare.com.json"
     note: "CDN 厂商自身域名，解析到 CDN 共享 IP，应判定良性"
+
+  # === 已知恶意样本（扩充） ===
+  - target: "update-windows-help.top"
+    expected_risk_level: ["高", "严重"]
+    category: malicious
+    fixture: "update-windows-help.top.json"
+    note: "Windows 系统更新仿冒钓鱼 + 口令窃取"
+
+  - target: "microsooft-login.security-check.info"
+    expected_risk_level: ["高", "严重"]
+    category: malicious
+    fixture: "microsooft-login.security-check.info.json"
+    note: "拼写混淆（microsooft 双 o）O365 凭证钓鱼"
+
+  - target: "163.am"
+    expected_risk_level: ["高", "严重"]
+    category: malicious
+    fixture: "163.am.json"
+    note: "国产邮箱短域名仿冒，跳转钓鱼落地页"
+
+  - target: "taoba0n.com"
+    expected_risk_level: ["高", "严重"]
+    category: malicious
+    fixture: "taoba0n.com.json"
+    note: "数字字母混淆（taoba0n）淘宝仿冒购物钓鱼"
+
+  - target: "jaccount.sjtu.edu-sh.cn"
+    expected_risk_level: ["高", "严重"]
+    category: malicious
+    fixture: "jaccount.sjtu.edu-sh.cn.json"
+    note: "高校统一认证仿冒，窃取校园网账号密码"
+
+  # === 已知良性样本（扩充，核心主流服务） ===
+  - target: "taobao.com"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "taobao.com.json"
+    note: "国内电商头部，高流行度 + ICP 备案"
+
+  - target: "jd.com"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "jd.com.json"
+    note: "国内电商头部，高流行度 + ICP 备案"
+
+  - target: "weixin.qq.com"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "weixin.qq.com.json"
+    note: "腾讯微信官方子域，高流行度"
+
+  - target: "github.com"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "github.com.json"
+    note: "全球知名代码托管，高流行度顶级域名"
+
+  - target: "microsoft.com"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "microsoft.com.json"
+    note: "微软官方，高流行度"
+
+  - target: "www.gov.cn"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "www.gov.cn.json"
+    note: "中国政府网站，高流行度 + 备案"
+
+  - target: "114.114.114.114"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "114.114.114.114.json"
+    note: "国内公共 DNS，典型良性 IP"
+
+  - target: "223.5.5.5"
+    expected_risk_level: "低"
+    category: benign
+    fixture: "223.5.5.5.json"
+    note: "阿里公共 DNS，典型良性 IP"
+
+  # === 边界样本（扩充，检验误报抑制与评分稳健性） ===
+  - target: "test.cdn-fastly.net"
+    expected_risk_level: "低"
+    category: borderline
+    fixture: "test.cdn-fastly.net.json"
+    note: "Fastly CDN 节点子域，共享 IP 应判良性"
+
+  - target: "blog.dev-new-prod.example.cloud"
+    expected_risk_level: ["低", "中"]
+    category: borderline
+    fixture: "blog.dev-new-prod.example.cloud.json"
+    note: "云厂商共享 IP + 低流行度新子域，需抑制误报"
+
+  - target: "mail.small-company.xyz"
+    expected_risk_level: "中"
+    category: borderline
+    fixture: "mail.small-company.xyz.json"
+    note: "小企业自有域名低流行度，需区分正常 vs 恶意"
+
+  - target: "cdn-content.image-host.top"
+    expected_risk_level: ["低", "中"]
+    category: borderline
+    fixture: "cdn-content.image-host.top.json"
+    note: "图床/静态资源共享 IP 与低流行度，边界样本"
+

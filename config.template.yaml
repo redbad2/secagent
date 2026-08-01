@@ -121,3 +121,10 @@ skills:
 # tool_routing:
 #   domain_threat_intel: [ctia_domain, qianxin_fdp_domain]
 #   ip_threat_intel: [ctia_ip, qianxin_fdp_ip, iporg]
+
+# === serve HTTP API 鉴权（可选）===
+# 绑定 loopback（127.0.0.1/localhost）时免认证，可省略此项。
+# 绑定非 loopback 地址时应配置 api_key（或环境变量 SECAGENT_SERVE_API_KEY），
+# 请求需带请求头 Authorization: Bearer <key>。未配置 key 绑定非 loopback 会打印启动告警。
+# serve:
+#   api_key: "your-serve-api-key"

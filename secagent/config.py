@@ -178,6 +178,10 @@ class AgentConfig:
     tool_routing: dict[str, list[str]] = field(
         default_factory=lambda: {k: list(v) for k, v in DEFAULT_TOOL_ROUTING.items()}
     )
+    # serve HTTP API 鉴权：Bearer token（P3-2）。空 = 仅 loopback 可访问，
+    # 绑定非 loopback 地址且未配置时启动告警。注意：与 LLM 的 SECAGENT_API_KEY 区分，
+    # 这里用独立的 SECAGENT_SERVE_API_KEY 环境变量。
+    serve_api_key: str = ""
 
 
 def _load_dotenv(env_path: Path) -> dict[str, str]:
@@ -341,6 +345,11 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
     else:
         tool_routing = {k: list(v) for k, v in DEFAULT_TOOL_ROUTING.items()}
 
+    # 14. serve HTTP API 鉴权（P3-2）
+    # 环境变量 SECAGENT_SERVE_API_KEY > yaml serve.api_key > 默认空（仅 loopback）
+    serve_api_key = env.get("SECAGENT_SERVE_API_KEY") or \
+        (yaml_data.get("serve", {}) or {}).get("api_key", "")
+
     return AgentConfig(
         llm=llm,
         models=models,
@@ -359,6 +368,7 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
         skills_llm_create=skills_llm_create,
         budget_max_tokens=budget_max_tokens,
         tool_routing=tool_routing,
+        serve_api_key=serve_api_key,
     )
 
 
