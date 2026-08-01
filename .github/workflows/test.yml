@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run test suite
+        run: python -m pytest tests/ -q
+
+      # P1-1 评估回归基线：仅当 baseline.json 已入库时执行。
+      # 首次需在本机 `secagent eval --online --save-baseline` 生成后提交。
+      - name: Check eval baseline (if present)
+        run: |
+          if [ -f tests/eval/baseline.json ]; then
+            python -m secagent eval --dataset tests/eval/dataset.yaml --check-baseline
+          else
+            echo "无 baseline.json，跳过评估基线回归检查（首次运行请先生成并提交）"
+          fi
