@@ -378,6 +378,9 @@ samples:
     note: "样本说明"
 ```
 
+> **fixture 生成与入库的完整操作指南见 [`EVAL_FIXTURES.md`](EVAL_FIXTURES.md)**——
+> 含首先生成、离线回放、baseline 维护、扩样配套四步工作流。
+
 ## 测试
 
 ```bash
