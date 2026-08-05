@@ -183,6 +183,24 @@ def _strip_post_json_noise(text: str) -> str:
                     if depth == 0:
                         return text[:j + 1].rstrip()
     return text
+
+
+# LLM 原文中需要加粗强调的风险关键词
+_RISK_BOLD_WORDS = ["严重", "高危", "高风险", "高度风险", "C2", "Cobalt Strike",
+                    "木马", "钓鱼", "恶意软件", "Backdoor"]
+
+
+def _enhance_risk_keywords(text: str) -> str:
+    """对 LLM 原文中的风险关键词加粗（markdown 语法，Rich 渲染时生效）。
+
+    只在词未被已有 ** 包裹时替换，避免双重加粗。
+    """
+    import re
+    for kw in _RISK_BOLD_WORDS:
+        text = re.sub(rf"(?<!\*){re.escape(kw)}(?!\*)", f"**{kw}**", text)
+    return text
+
+
 def display_result(result, fmt: str = "text", output_file: str | None = None):
     """渲染分析结果。"""
     if fmt == "json":
@@ -229,30 +247,26 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
                 title="⚠ 误报提醒", border_style="yellow",
             ))
 
-        # 渲染完整分析报告（LLM 原始输出，截掉 JSON 后的自言自语）
-        if result.raw_output:
-            clean = _strip_post_json_noise(result.raw_output)
-            console.print()
-            console.print(Markdown(clean))
-            console.print()
-        else:
-            if result.summary:
-                console.print(f"\n[bold]摘要:[/bold] {result.summary}")
-            if result.findings:
-                console.print("\n[bold]发现:[/bold]")
-                for f in result.findings:
-                    console.print(f"  - {f}")
-            if result.iocs:
-                console.print(f"\n[bold]IOC:[/bold]")
-                for ioc in result.iocs:
-                    console.print(f"  - {ioc}")
+        # ===== 结构化增强渲染（优先）=====
+        # 摘要：绿色面板
+        if result.summary:
+            console.print(Panel(
+                f"[bold]{result.summary}[/bold]",
+                title="摘要", border_style="green",
+            ))
 
-        if result.tools_used:
-            console.print(f"\n[bold]使用工具[/bold] ({len(result.tools_used)}): "
-                           + ", ".join(result.tools_used))
+        # 主要发现：彩色列表（findings 已由解析器压平为字符串）
+        if result.findings:
+            console.print(f"\n[bold cyan]主要发现[/bold cyan] ({len(result.findings)})")
+            for f in result.findings:
+                console.print(f"  [yellow]•[/yellow] {f}")
 
+        # 处置建议：绿色面板
         if result.recommendation:
-            console.print(f"\n[bold]建议:[/bold] {result.recommendation}")
+            console.print(Panel(
+                f"[bold green]{result.recommendation}[/bold green]",
+                title="处置建议", border_style="green",
+            ))
 
         # IOC 分组展示（P1-2）：已验证 / 待核实
         if result.verified_iocs or result.unverified_iocs:
@@ -265,6 +279,25 @@ def display_result(result, fmt: str = "text", output_file: str | None = None):
                 console.print(f"[bold yellow]待核实 IOC[/bold yellow] ({len(result.unverified_iocs)}):")
                 for ioc in result.unverified_iocs:
                     console.print(f"  [yellow]?[/yellow] [{ioc['type']}] {ioc['value']}")
+
+        if result.tools_used:
+            console.print(f"\n[bold]使用工具[/bold] ({len(result.tools_used)}): "
+                           + ", ".join(result.tools_used))
+
+        # ===== LLM 原始输出作为补充内容（保留信息完整性）=====
+        if result.raw_output:
+            clean = _strip_post_json_noise(result.raw_output)
+            clean = _enhance_risk_keywords(clean)
+            console.print()
+            console.print("[dim]─" * 40 + "[/dim]")
+            console.print("[bold]详细分析（LLM 原始输出）[/bold]")
+            console.print(Markdown(clean))
+        else:
+            # 无 LLM 原文时：基础结构化信息（兜底）
+            if result.iocs:
+                console.print(f"\n[bold]IOC:[/bold]")
+                for ioc in result.iocs:
+                    console.print(f"  - {ioc}")
 
         # token 用量统计
         if result.token_usage and result.token_usage.get("total_tokens"):
